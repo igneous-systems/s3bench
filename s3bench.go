@@ -228,13 +228,13 @@ func (r Result) String() string {
 	report += fmt.Sprintf("Number of Errors:  %d\n", r.numErrors)
 	if len(r.opDurations) > 0 {
 		report += fmt.Sprintln("------------------------------------")
-		report += fmt.Sprintf("Put times Max:       %0.3f s\n", r.percentile(100))
-		report += fmt.Sprintf("Put times 99th %%ile: %0.3f s\n", r.percentile(99))
-		report += fmt.Sprintf("Put times 90th %%ile: %0.3f s\n", r.percentile(90))
-		report += fmt.Sprintf("Put times 75th %%ile: %0.3f s\n", r.percentile(75))
-		report += fmt.Sprintf("Put times 50th %%ile: %0.3f s\n", r.percentile(50))
-		report += fmt.Sprintf("Put times 25th %%ile: %0.3f s\n", r.percentile(25))
-		report += fmt.Sprintf("Put times Min:       %0.3f s\n", r.percentile(0))
+		report += fmt.Sprintf("%s times Max:       %0.3f s\n", r.operation, r.percentile(100))
+		report += fmt.Sprintf("%s times 99th %%ile: %0.3f s\n", r.operation, r.percentile(99))
+		report += fmt.Sprintf("%s times 90th %%ile: %0.3f s\n", r.operation, r.percentile(90))
+		report += fmt.Sprintf("%s times 75th %%ile: %0.3f s\n", r.operation, r.percentile(75))
+		report += fmt.Sprintf("%s times 50th %%ile: %0.3f s\n", r.operation, r.percentile(50))
+		report += fmt.Sprintf("%s times 25th %%ile: %0.3f s\n", r.operation, r.percentile(25))
+		report += fmt.Sprintf("%s times Min:       %0.3f s\n", r.operation, r.percentile(0))
 	}
 	return report
 }
