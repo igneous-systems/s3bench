@@ -34,6 +34,8 @@ func main() {
 	objectSize := flag.Int64("objectSize", 80*1024*1024, "size of individual requests in bytes (must be smaller than main memory)")
 	numClients := flag.Int("numClients", 40, "number of concurrent clients")
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
+	skipCleanup := flag.Bool("skipCleanup", false, "skip deleting objects created by this tool at the end of the run")
+
 	flag.Parse()
 
 	if *numClients > *numSamples || *numSamples < 1 {
@@ -75,11 +77,12 @@ func main() {
 	fmt.Println()
 
 	// Start the load clients and run a write test followed by a read test
-	params.StartClients(&aws.Config{
+	cfg := &aws.Config{
 		Credentials:      credentials.NewStaticCredentials(*accessKey, *accessSecret, ""),
 		Region:           aws.String("igneous-test"),
 		S3ForcePathStyle: aws.Bool(true),
-	})
+	}
+	params.StartClients(cfg)
 
 	fmt.Printf("Running %s test...\n", opWrite)
 	writeResult := params.Run(opWrite)
@@ -95,6 +98,25 @@ func main() {
 	fmt.Println(writeResult)
 	fmt.Println()
 	fmt.Println(readResult)
+
+	// Do cleanup if required
+	if !*skipCleanup {
+		fmt.Println()
+		fmt.Printf("Cleaning up %d objects...", *numSamples)
+		numDeleted := 0
+		svc := s3.New(session.New(), cfg)
+		for i := 0; i < *numSamples; i++ {
+			params := &s3.DeleteObjectInput{
+				Bucket: aws.String(*bucketName),
+				Key:    aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
+			}
+			_, err := svc.DeleteObject(params)
+			if err == nil {
+				numDeleted++
+			}
+		}
+		fmt.Printf("Done (%d/%d)\n", numDeleted, *numSamples)
+	}
 }
 
 func (params *Params) Run(op string) Result {
