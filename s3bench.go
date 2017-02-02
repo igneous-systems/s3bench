@@ -64,7 +64,7 @@ func main() {
 	fmt.Println(params)
 	fmt.Println()
 
-	// Generate the data from which we will do the writting
+	// Generate the data from which we will do the writtinghis
 	fmt.Printf("Generating in-memory sample data... ")
 	timeGenData := time.Now()
 	bufferBytes = make([]byte, *objectSize, *objectSize)
