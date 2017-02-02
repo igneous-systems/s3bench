@@ -27,6 +27,7 @@ var bufferBytes []byte
 
 func main() {
 	endpoint := flag.String("endpoint", "", "S3 endpoint(s) comma separated - http://IP:PORT,http://IP:PORT")
+	region := flag.String("region", "igneous-test", "AWS region to use, eg: us-west-1|us-east-1, etc")
 	accessKey := flag.String("accessKey", "", "the S3 access key")
 	accessSecret := flag.String("accessSecret", "", "the S3 access secret")
 	bucketName := flag.String("bucket", "bucketname", "the bucket for which to run the test")
@@ -79,7 +80,7 @@ func main() {
 	// Start the load clients and run a write test followed by a read test
 	cfg := &aws.Config{
 		Credentials:      credentials.NewStaticCredentials(*accessKey, *accessSecret, ""),
-		Region:           aws.String("igneous-test"),
+		Region:           aws.String(*region),
 		S3ForcePathStyle: aws.Bool(true),
 	}
 	params.StartClients(cfg)
