@@ -31,12 +31,11 @@ http://endpoint2:80. Object name will be prefixed with loadgen.
 ```
 
 #### Note on regions & endpoints
-
 By default, the region used will be `igneous-test` , a fictitious region which
 is suitable for using with the Igneous Data Service.  However, you can elect to
-use this tool with AmazonS3, in which case you will need to specify the proper region.
+use this tool with Amazon S3, in which case you will need to specify the proper region.
 
-It is also important when using AmazonS3 that you specify the proper endpoint, which
+It is also important when using Amazon S3 that you specify the proper endpoint, which
 will generally be `http://s3-regionName.amazonaws.com:80`. EG: if the bucket which you are
 testing is in Oregon, you would specify:
 
