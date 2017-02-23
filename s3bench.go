@@ -21,6 +21,9 @@ import (
 const (
 	opRead  = "Read"
 	opWrite = "Write"
+	//max that can be deleted at a time via DeleteObjects()
+	commitSize = 1000
+
 )
 
 var bufferBytes []byte
@@ -103,20 +106,37 @@ func main() {
 	// Do cleanup if required
 	if !*skipCleanup {
 		fmt.Println()
-		fmt.Printf("Cleaning up %d objects...", *numSamples)
-		numDeleted := 0
+		fmt.Printf("Cleaning up %d objects...\n", *numSamples)
+		delStartTime := time.Now()
 		svc := s3.New(session.New(), cfg)
-		for i := 0; i < *numSamples; i++ {
-			params := &s3.DeleteObjectInput{
-				Bucket: aws.String(*bucketName),
-				Key:    aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
-			}
-			_, err := svc.DeleteObject(params)
-			if err == nil {
-				numDeleted++
+
+		numSuccessfullyDeleted := 0
+
+		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
+		for i := 0; i < *numSamples; i++{
+			bar := s3.ObjectIdentifier{
+				Key: aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
+				}
+			keyList = append(keyList, &bar)
+			if len(keyList) == commitSize || i == *numSamples-1 {
+				fmt.Printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-len(keyList)+1, i)
+				params := &s3.DeleteObjectsInput {
+					Bucket: aws.String(*bucketName),
+					Delete:   &s3.Delete{
+						Objects: keyList}}
+				_, err := svc.DeleteObjects(params)
+				if err == nil {
+					numSuccessfullyDeleted += len(keyList)
+					fmt.Printf("Succeeded\n")
+				} else {
+					fmt.Printf("Failed (%v)\n", err)
+				}
+				//set cursor to 0 so we can move to the next batch.
+				keyList = keyList[:0]
+
 			}
 		}
-		fmt.Printf("Done (%d/%d)\n", numDeleted, *numSamples)
+		fmt.Printf("Successfully deleted %d/%d objects in %s\n", numSuccessfullyDeleted, *numSamples, time.Since(delStartTime))
 	}
 }
 
