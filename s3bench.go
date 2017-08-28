@@ -23,7 +23,6 @@ const (
 	opWrite = "Write"
 	//max that can be deleted at a time via DeleteObjects()
 	commitSize = 1000
-
 )
 
 var bufferBytes []byte
@@ -71,8 +70,7 @@ func main() {
 	fmt.Printf("Generating in-memory sample data... ")
 	timeGenData := time.Now()
 	bufferBytes = make([]byte, *objectSize, *objectSize)
-	buffer := bytes.NewBuffer(bufferBytes)
-	_, err := io.CopyN(buffer, rand.Reader, *objectSize)
+	_, err := rand.Read(bufferBytes)
 	if err != nil {
 		fmt.Printf("Could not allocate a buffer")
 		os.Exit(1)
@@ -113,16 +111,16 @@ func main() {
 		numSuccessfullyDeleted := 0
 
 		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
-		for i := 0; i < *numSamples; i++{
+		for i := 0; i < *numSamples; i++ {
 			bar := s3.ObjectIdentifier{
 				Key: aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
-				}
+			}
 			keyList = append(keyList, &bar)
 			if len(keyList) == commitSize || i == *numSamples-1 {
 				fmt.Printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-len(keyList)+1, i)
-				params := &s3.DeleteObjectsInput {
+				params := &s3.DeleteObjectsInput{
 					Bucket: aws.String(*bucketName),
-					Delete:   &s3.Delete{
+					Delete: &s3.Delete{
 						Objects: keyList}}
 				_, err := svc.DeleteObjects(params)
 				if err == nil {
