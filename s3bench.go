@@ -38,6 +38,7 @@ func main() {
 	numClients := flag.Int("numClients", 40, "number of concurrent clients")
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
 	skipCleanup := flag.Bool("skipCleanup", false, "skip deleting objects created by this tool at the end of the run")
+	verbose := flag.Bool("verbose", false, "print verbose per thread status")
 
 	flag.Parse()
 
@@ -62,6 +63,7 @@ func main() {
 		objectNamePrefix: *objectNamePrefix,
 		bucketName:       *bucketName,
 		endpoints:        strings.Split(*endpoint, ","),
+		verbose:					*verbose,
 	}
 	fmt.Println(params)
 	fmt.Println()
@@ -156,10 +158,12 @@ func (params *Params) Run(op string) Result {
 			result.bytesTransmitted = result.bytesTransmitted + params.objectSize
 			result.opDurations = append(result.opDurations, resp.duration.Seconds())
 		}
-		fmt.Printf("%v operation completed in %0.2fs (%d/%d) - %0.2fMB/s%s\n",
-			op, resp.duration.Seconds(), i+1, params.numSamples,
-			(float64(result.bytesTransmitted)/(1024*1024))/time.Since(startTime).Seconds(),
-			errorString)
+		if params.verbose {
+			fmt.Printf("%v operation completed in %0.2fs (%d/%d) - %0.2fMB/s%s\n",
+				op, resp.duration.Seconds(), i+1, params.numSamples,
+				(float64(result.bytesTransmitted)/(1024*1024))/time.Since(startTime).Seconds(),
+				errorString)
+		}
 	}
 
 	result.totalDuration = time.Since(startTime)
@@ -239,6 +243,7 @@ type Params struct {
 	objectNamePrefix string
 	bucketName       string
 	endpoints        []string
+	verbose					 bool
 }
 
 func (params Params) String() string {
@@ -249,6 +254,7 @@ func (params Params) String() string {
 	output += fmt.Sprintf("objectSize:       %0.4f MB\n", float64(params.objectSize)/(1024*1024))
 	output += fmt.Sprintf("numClients:       %d\n", params.numClients)
 	output += fmt.Sprintf("numSamples:       %d\n", params.numSamples)
+	output += fmt.Sprintf("verbose:       %d\n", params.verbose)
 	return output
 }
 
@@ -296,3 +302,4 @@ type Resp struct {
 	duration time.Duration
 	numBytes int64
 }
+
