@@ -63,7 +63,7 @@ func main() {
 		objectNamePrefix: *objectNamePrefix,
 		bucketName:       *bucketName,
 		endpoints:        strings.Split(*endpoint, ","),
-		verbose:					*verbose,
+		verbose:          *verbose,
 	}
 	fmt.Println(params)
 	fmt.Println()
@@ -243,7 +243,7 @@ type Params struct {
 	objectNamePrefix string
 	bucketName       string
 	endpoints        []string
-	verbose					 bool
+	verbose          bool
 }
 
 func (params Params) String() string {
@@ -302,4 +302,3 @@ type Resp struct {
 	duration time.Duration
 	numBytes int64
 }
-
