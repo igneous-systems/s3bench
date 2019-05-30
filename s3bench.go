@@ -63,7 +63,7 @@ func main() {
 		objectNamePrefix: *objectNamePrefix,
 		bucketName:       *bucketName,
 		endpoints:        strings.Split(*endpoint, ","),
-		verbose:					*verbose,
+		verbose:          *verbose,
 	}
 	fmt.Println(params)
 	fmt.Println()
@@ -197,6 +197,7 @@ func (params *Params) StartClients(cfg *aws.Config) {
 	for i := 0; i < int(params.numClients); i++ {
 		cfg.Endpoint = aws.String(params.endpoints[i%len(params.endpoints)])
 		go params.startClient(cfg)
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
@@ -243,7 +244,7 @@ type Params struct {
 	objectNamePrefix string
 	bucketName       string
 	endpoints        []string
-	verbose					 bool
+	verbose          bool
 }
 
 func (params Params) String() string {
@@ -302,4 +303,3 @@ type Resp struct {
 	duration time.Duration
 	numBytes int64
 }
-
