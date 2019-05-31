@@ -197,6 +197,7 @@ func (params *Params) StartClients(cfg *aws.Config) {
 	for i := 0; i < int(params.numClients); i++ {
 		cfg.Endpoint = aws.String(params.endpoints[i%len(params.endpoints)])
 		go params.startClient(cfg)
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
