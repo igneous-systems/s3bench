@@ -21,6 +21,7 @@ import (
 const (
 	opRead  = "Read"
 	opWrite = "Write"
+	opHeadObj = "HeadObj"
 	//max that can be deleted at a time via DeleteObjects()
 	commitSize = 1000
 )
@@ -39,6 +40,7 @@ func main() {
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
 	skipCleanup := flag.Bool("skipCleanup", false, "skip deleting objects created by this tool at the end of the run")
 	verbose := flag.Bool("verbose", false, "print verbose per thread status")
+	metaData := flag.Bool("metaData", false, "read obj metadata instead of obj itself")
 
 	flag.Parse()
 
@@ -64,6 +66,7 @@ func main() {
 		bucketName:       *bucketName,
 		endpoints:        strings.Split(*endpoint, ","),
 		verbose:          *verbose,
+		metaData:         *metaData,
 	}
 	fmt.Println(params)
 	fmt.Println()
@@ -92,9 +95,16 @@ func main() {
 	writeResult := params.Run(opWrite)
 	fmt.Println()
 
-	fmt.Printf("Running %s test...\n", opRead)
-	readResult := params.Run(opRead)
-	fmt.Println()
+	var readResult = Result{}
+	if params.metaData {
+		fmt.Printf("Running %s test...\n", opHeadObj)
+		readResult = params.Run(opHeadObj)
+		fmt.Println()
+	} else {
+		fmt.Printf("Running %s test...\n", opRead)
+		readResult = params.Run(opRead)
+		fmt.Println()
+	}
 
 	// Repeating the parameters of the test followed by the results
 	fmt.Println(params)
@@ -187,6 +197,11 @@ func (params *Params) submitLoad(op string) {
 				Bucket: bucket,
 				Key:    key,
 			}
+		} else if op == opHeadObj {
+			params.requests <- &s3.HeadObjectInput{
+				Bucket: bucket,
+				Key:    key,
+			}
 		} else {
 			panic("Developer error")
 		}
@@ -225,6 +240,16 @@ func (params *Params) startClient(cfg *aws.Config) {
 			if numBytes != params.objectSize {
 				err = fmt.Errorf("expected object length %d, actual %d", params.objectSize, numBytes)
 			}
+		case *s3.HeadObjectInput:
+			req, resp := svc.HeadObjectRequest(r)
+			err = req.Send()
+			numBytes = 0
+			if err == nil {
+				numBytes = *resp.ContentLength
+			}
+			if numBytes != params.objectSize {
+				err = fmt.Errorf("expected object length %d, actual %d, resp %v", params.objectSize, numBytes, resp)
+			}
 		default:
 			panic("Developer error")
 		}
@@ -245,6 +270,7 @@ type Params struct {
 	bucketName       string
 	endpoints        []string
 	verbose          bool
+	metaData         bool
 }
 
 func (params Params) String() string {
@@ -256,6 +282,7 @@ func (params Params) String() string {
 	output += fmt.Sprintf("numClients:       %d\n", params.numClients)
 	output += fmt.Sprintf("numSamples:       %d\n", params.numSamples)
 	output += fmt.Sprintf("verbose:       %d\n", params.verbose)
+	output += fmt.Sprintf("metaData:      %d\n", params.metaData)
 	return output
 }
 
@@ -270,19 +297,24 @@ type Result struct {
 
 func (r Result) String() string {
 	report := fmt.Sprintf("Results Summary for %s Operation(s)\n", r.operation)
-	report += fmt.Sprintf("Total Transferred: %0.3f MB\n", float64(r.bytesTransmitted)/(1024*1024))
-	report += fmt.Sprintf("Total Throughput:  %0.2f MB/s\n", (float64(r.bytesTransmitted)/(1024*1024))/r.totalDuration.Seconds())
+	if r.operation == opHeadObj {
+		report += fmt.Sprintf("Total Reqs: %d\n", len(r.opDurations))
+	} else {
+		report += fmt.Sprintf("Total Transferred: %0.3f MB\n", float64(r.bytesTransmitted)/(1024*1024))
+		report += fmt.Sprintf("Total Throughput:  %0.2f MB/s\n", (float64(r.bytesTransmitted)/(1024*1024))/r.totalDuration.Seconds())
+	}
 	report += fmt.Sprintf("Total Duration:    %0.3f s\n", r.totalDuration.Seconds())
 	report += fmt.Sprintf("Number of Errors:  %d\n", r.numErrors)
 	if len(r.opDurations) > 0 {
 		report += fmt.Sprintln("------------------------------------")
+		report += fmt.Sprintf("%s times Avg:       %0.3f s\n", r.operation, r.avg())
 		report += fmt.Sprintf("%s times Max:       %0.3f s\n", r.operation, r.percentile(100))
+		report += fmt.Sprintf("%s times Min:       %0.3f s\n", r.operation, r.percentile(0))
 		report += fmt.Sprintf("%s times 99th %%ile: %0.3f s\n", r.operation, r.percentile(99))
 		report += fmt.Sprintf("%s times 90th %%ile: %0.3f s\n", r.operation, r.percentile(90))
 		report += fmt.Sprintf("%s times 75th %%ile: %0.3f s\n", r.operation, r.percentile(75))
 		report += fmt.Sprintf("%s times 50th %%ile: %0.3f s\n", r.operation, r.percentile(50))
 		report += fmt.Sprintf("%s times 25th %%ile: %0.3f s\n", r.operation, r.percentile(25))
-		report += fmt.Sprintf("%s times Min:       %0.3f s\n", r.operation, r.percentile(0))
 	}
 	return report
 }
@@ -294,6 +326,15 @@ func (r Result) percentile(i int) float64 {
 		i = int(float64(i) / 100 * float64(len(r.opDurations)))
 	}
 	return r.opDurations[i]
+}
+
+func (r Result) avg() float64 {
+	ln := float64(len(r.opDurations))
+	sm := float64(0)
+	for _, el := range r.opDurations {
+		sm += el
+	}
+	return sm / ln
 }
 
 type Req interface{}
