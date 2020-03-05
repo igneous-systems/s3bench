@@ -131,3 +131,10 @@ Put times 50th %ile: 0.001 s
 Put times 25th %ile: 0.001 s
 Put times Min:       0.001 s
 ```
+
+##### Head-object
+It is possible to send head-object requests instead of get-object.
+For this purpose one sould use *-metaData* flag
+```
+./s3bench -accessKey=KEY -accessSecret=SECRET -bucket=loadgen -endpoint=http://endpoint1:80 -numClients=2 -numSamples=10 -objectNamePrefix=loadgen -objectSize=1024 -metaData
+```
