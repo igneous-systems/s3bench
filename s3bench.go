@@ -42,7 +42,8 @@ func (params *Params) prepareBucket(cfg *aws.Config) bool {
 
 	if err == nil {
 		return true
-	} else if !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou:") {
+	} else if !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou:") &&
+		!strings.Contains(err.Error(), "BucketAlreadyExists:") {
 		panic("Failed to create bucket: " + err.Error())
 	}
 
