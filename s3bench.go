@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"regexp"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -28,6 +30,47 @@ const (
 
 var bufferBytes []byte
 
+// true if created
+// false if existed
+func (params *Params) prepareBucket(cfg *aws.Config) bool {
+	cfg.Endpoint = aws.String(params.endpoints[0])
+	svc := s3.New(session.New(), cfg)
+	req, _ := svc.CreateBucketRequest(
+		&s3.CreateBucketInput{Bucket: aws.String(params.bucketName)})
+
+	err := req.Send()
+
+	if err == nil {
+		return true
+	} else if !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou:") {
+		panic("Failed to create bucket: " + err.Error())
+	}
+
+	return false
+}
+
+func parse_size(sz string) int64 {
+	sizes := map[string]int64 {
+		"b": 1,
+		"Kb": 1024,
+		"Mb": 1024 * 1024,
+		"Gb": 1024 * 1024 * 1024,
+	}
+	re := regexp.MustCompile(`^(\d+)([bKMG]{1,2})$`)
+	mm := re.FindStringSubmatch(sz)
+	if len(mm) != 3 {
+		fmt.Printf("Invalid objectSize value format\n")
+		os.Exit(1)
+	}
+	val, err := strconv.ParseInt(string(mm[1]), 10, 64)
+	mult, ex := sizes[string(mm[2])]
+	if !ex || err != nil {
+		fmt.Printf("Invalid objectSize value\n")
+		os.Exit(1)
+	}
+	return val * mult
+}
+
 func main() {
 	endpoint := flag.String("endpoint", "", "S3 endpoint(s) comma separated - http://IP:PORT,http://IP:PORT")
 	region := flag.String("region", "igneous-test", "AWS region to use, eg: us-west-1|us-east-1, etc")
@@ -35,12 +78,13 @@ func main() {
 	accessSecret := flag.String("accessSecret", "", "the S3 access secret")
 	bucketName := flag.String("bucket", "bucketname", "the bucket for which to run the test")
 	objectNamePrefix := flag.String("objectNamePrefix", "loadgen_test_", "prefix of the object name that will be used")
-	objectSize := flag.Int64("objectSize", 80*1024*1024, "size of individual requests in bytes (must be smaller than main memory)")
+	objectSize := flag.String("objectSize", "80Mb", "size of individual requests (must be smaller than main memory)")
 	numClients := flag.Int("numClients", 40, "number of concurrent clients")
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
 	skipCleanup := flag.Bool("skipCleanup", false, "skip deleting objects created by this tool at the end of the run")
 	verbose := flag.Bool("verbose", false, "print verbose per thread status")
 	metaData := flag.Bool("metaData", false, "read obj metadata instead of obj itself")
+	sampleReads := flag.Int("sampleReads", 1, "number of reads of each sample")
 
 	flag.Parse()
 
@@ -59,14 +103,15 @@ func main() {
 	params := Params{
 		requests:         make(chan Req),
 		responses:        make(chan Resp),
-		numSamples:       *numSamples,
+		numSamples:       uint(*numSamples),
 		numClients:       uint(*numClients),
-		objectSize:       *objectSize,
+		objectSize:       parse_size(*objectSize),
 		objectNamePrefix: *objectNamePrefix,
 		bucketName:       *bucketName,
 		endpoints:        strings.Split(*endpoint, ","),
 		verbose:          *verbose,
 		metaData:         *metaData,
+		sampleReads:      uint(*sampleReads),
 	}
 	fmt.Println(params)
 	fmt.Println()
@@ -74,7 +119,7 @@ func main() {
 	// Generate the data from which we will do the writting
 	fmt.Printf("Generating in-memory sample data... ")
 	timeGenData := time.Now()
-	bufferBytes = make([]byte, *objectSize, *objectSize)
+	bufferBytes = make([]byte, params.objectSize, params.objectSize)
 	_, err := rand.Read(bufferBytes)
 	if err != nil {
 		fmt.Printf("Could not allocate a buffer")
@@ -89,6 +134,9 @@ func main() {
 		Region:           aws.String(*region),
 		S3ForcePathStyle: aws.Bool(true),
 	}
+
+	bucket_created := params.prepareBucket(cfg)
+
 	params.StartClients(cfg)
 
 	fmt.Printf("Running %s test...\n", opWrite)
@@ -147,6 +195,18 @@ func main() {
 			}
 		}
 		fmt.Printf("Successfully deleted %d/%d objects in %s\n", numSuccessfullyDeleted, *numSamples, time.Since(delStartTime))
+
+		if bucket_created {
+			fmt.Printf("Deleting bucket...\n")
+			params := &s3.DeleteBucketInput{
+				Bucket: aws.String(*bucketName)}
+			_, err := svc.DeleteBucket(params)
+			if err == nil {
+				fmt.Printf("Succeeded\n")
+			} else {
+				fmt.Printf("Failed (%v)\n", err)
+			}
+		}
 	}
 }
 
@@ -156,9 +216,10 @@ func (params *Params) Run(op string) Result {
 	// Start submitting load requests
 	go params.submitLoad(op)
 
+	opSamples := params.spo(op)
 	// Collect and aggregate stats for completed requests
-	result := Result{opDurations: make([]float64, 0, params.numSamples), operation: op}
-	for i := 0; i < params.numSamples; i++ {
+	result := Result{opDurations: make([]float64, 0, opSamples), operation: op}
+	for i := uint(0); i < opSamples; i++ {
 		resp := <-params.responses
 		errorString := ""
 		if resp.err != nil {
@@ -167,6 +228,7 @@ func (params *Params) Run(op string) Result {
 		} else {
 			result.bytesTransmitted = result.bytesTransmitted + params.objectSize
 			result.opDurations = append(result.opDurations, resp.duration.Seconds())
+			result.opTtfb = append(result.opTtfb, resp.ttfb.Seconds())
 		}
 		if params.verbose {
 			fmt.Printf("%v operation completed in %0.2fs (%d/%d) - %0.2fMB/s%s\n",
@@ -178,14 +240,16 @@ func (params *Params) Run(op string) Result {
 
 	result.totalDuration = time.Since(startTime)
 	sort.Float64s(result.opDurations)
+	sort.Float64s(result.opTtfb)
 	return result
 }
 
 // Create an individual load request and submit it to the client queue
 func (params *Params) submitLoad(op string) {
 	bucket := aws.String(params.bucketName)
-	for i := 0; i < params.numSamples; i++ {
-		key := aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i))
+	opSamples := params.spo(op)
+	for i := uint(0); i < opSamples; i++ {
+		key := aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i % params.numSamples))
 		if op == opWrite {
 			params.requests <- &s3.PutObjectInput{
 				Bucket: bucket,
@@ -221,6 +285,7 @@ func (params *Params) startClient(cfg *aws.Config) {
 	svc := s3.New(session.New(), cfg)
 	for request := range params.requests {
 		putStartTime := time.Now()
+		var ttfb time.Duration
 		var err error
 		numBytes := params.objectSize
 
@@ -230,9 +295,11 @@ func (params *Params) startClient(cfg *aws.Config) {
 			// Disable payload checksum calculation (very expensive)
 			req.HTTPRequest.Header.Add("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 			err = req.Send()
+			ttfb = time.Since(putStartTime)
 		case *s3.GetObjectInput:
 			req, resp := svc.GetObjectRequest(r)
 			err = req.Send()
+			ttfb = time.Since(putStartTime)
 			numBytes = 0
 			if err == nil {
 				numBytes, err = io.Copy(ioutil.Discard, resp.Body)
@@ -243,6 +310,7 @@ func (params *Params) startClient(cfg *aws.Config) {
 		case *s3.HeadObjectInput:
 			req, resp := svc.HeadObjectRequest(r)
 			err = req.Send()
+			ttfb = time.Since(putStartTime)
 			numBytes = 0
 			if err == nil {
 				numBytes = *resp.ContentLength
@@ -254,7 +322,7 @@ func (params *Params) startClient(cfg *aws.Config) {
 			panic("Developer error")
 		}
 
-		params.responses <- Resp{err, time.Since(putStartTime), numBytes}
+		params.responses <- Resp{err, time.Since(putStartTime), numBytes, ttfb}
 	}
 }
 
@@ -263,7 +331,7 @@ type Params struct {
 	operation        string
 	requests         chan Req
 	responses        chan Resp
-	numSamples       int
+	numSamples       uint
 	numClients       uint
 	objectSize       int64
 	objectNamePrefix string
@@ -271,6 +339,7 @@ type Params struct {
 	endpoints        []string
 	verbose          bool
 	metaData         bool
+	sampleReads      uint
 }
 
 func (params Params) String() string {
@@ -281,6 +350,7 @@ func (params Params) String() string {
 	output += fmt.Sprintf("objectSize:       %0.4f MB\n", float64(params.objectSize)/(1024*1024))
 	output += fmt.Sprintf("numClients:       %d\n", params.numClients)
 	output += fmt.Sprintf("numSamples:       %d\n", params.numSamples)
+	output += fmt.Sprintf("sampleReads:      %d\n", params.sampleReads)
 	output += fmt.Sprintf("verbose:       %d\n", params.verbose)
 	output += fmt.Sprintf("metaData:      %d\n", params.metaData)
 	return output
@@ -293,6 +363,7 @@ type Result struct {
 	numErrors        int
 	opDurations      []float64
 	totalDuration    time.Duration
+	opTtfb           []float64
 }
 
 func (r Result) String() string {
@@ -305,33 +376,56 @@ func (r Result) String() string {
 	}
 	report += fmt.Sprintf("Total Duration:    %0.3f s\n", r.totalDuration.Seconds())
 	report += fmt.Sprintf("Number of Errors:  %d\n", r.numErrors)
+
 	if len(r.opDurations) > 0 {
 		report += fmt.Sprintln("------------------------------------")
-		report += fmt.Sprintf("%s times Avg:       %0.3f s\n", r.operation, r.avg())
-		report += fmt.Sprintf("%s times Max:       %0.3f s\n", r.operation, r.percentile(100))
-		report += fmt.Sprintf("%s times Min:       %0.3f s\n", r.operation, r.percentile(0))
-		report += fmt.Sprintf("%s times 99th %%ile: %0.3f s\n", r.operation, r.percentile(99))
-		report += fmt.Sprintf("%s times 90th %%ile: %0.3f s\n", r.operation, r.percentile(90))
-		report += fmt.Sprintf("%s times 75th %%ile: %0.3f s\n", r.operation, r.percentile(75))
-		report += fmt.Sprintf("%s times 50th %%ile: %0.3f s\n", r.operation, r.percentile(50))
-		report += fmt.Sprintf("%s times 25th %%ile: %0.3f s\n", r.operation, r.percentile(25))
+		report += fmt.Sprintf("%s times Avg:       %0.3f s\n", r.operation, avg(r.opDurations))
+		report += fmt.Sprintf("%s times Max:       %0.3f s\n", r.operation, percentile(r.opDurations, 100))
+		report += fmt.Sprintf("%s times Min:       %0.3f s\n", r.operation, percentile(r.opDurations, 0))
+		report += fmt.Sprintf("%s times 99th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 99))
+		report += fmt.Sprintf("%s times 90th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 90))
+		report += fmt.Sprintf("%s times 75th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 75))
+		report += fmt.Sprintf("%s times 50th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 50))
+		report += fmt.Sprintf("%s times 25th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 25))
+	}
+
+	if len(r.opTtfb) > 0 {
+		report += fmt.Sprintln("------------------------------------")
+		report += fmt.Sprintf("%s ttfb Avg:       %0.3f s\n", r.operation, avg(r.opTtfb))
+		report += fmt.Sprintf("%s ttfb Max:       %0.3f s\n", r.operation, percentile(r.opTtfb, 100))
+		report += fmt.Sprintf("%s ttfb Min:       %0.3f s\n", r.operation, percentile(r.opTtfb, 0))
+		report += fmt.Sprintf("%s ttfb 99th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 99))
+		report += fmt.Sprintf("%s ttfb 90th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 90))
+		report += fmt.Sprintf("%s ttfb 75th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 75))
+		report += fmt.Sprintf("%s ttfb 50th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 50))
+		report += fmt.Sprintf("%s ttfb 25th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 25))
 	}
 	return report
 }
 
-func (r Result) percentile(i int) float64 {
-	if i >= 100 {
-		i = len(r.opDurations) - 1
-	} else if i > 0 && i < 100 {
-		i = int(float64(i) / 100 * float64(len(r.opDurations)))
+// samples per operation
+func (params Params) spo(op string) uint {
+	if op == opWrite {
+		return params.numSamples
 	}
-	return r.opDurations[i]
+
+	return params.numSamples * params.sampleReads
 }
 
-func (r Result) avg() float64 {
-	ln := float64(len(r.opDurations))
+func percentile(dt []float64, i int) float64 {
+	ln := len(dt)
+	if i >= 100 {
+		i = ln - 1
+	} else if i > 0 && i < 100 {
+		i = int(float64(i) / 100 * float64(ln))
+	}
+	return dt[i]
+}
+
+func avg(dt []float64) float64 {
+	ln := float64(len(dt))
 	sm := float64(0)
-	for _, el := range r.opDurations {
+	for _, el := range dt {
 		sm += el
 	}
 	return sm / ln
@@ -343,4 +437,5 @@ type Resp struct {
 	err      error
 	duration time.Duration
 	numBytes int64
+	ttfb     time.Duration
 }
