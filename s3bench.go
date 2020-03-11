@@ -13,6 +13,7 @@ import (
 	"time"
 	"regexp"
 	"strconv"
+	mathrand "math/rand"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -86,6 +87,7 @@ func main() {
 	verbose := flag.Bool("verbose", false, "print verbose per thread status")
 	metaData := flag.Bool("metaData", false, "read obj metadata instead of obj itself")
 	sampleReads := flag.Int("sampleReads", 1, "number of reads of each sample")
+	clientDelay := flag.Int("clientDelay", 1, "delay in ms before client starts. if negative value provided delay will be randomized in interval [0, abs{clientDelay})")
 
 	flag.Parse()
 
@@ -113,6 +115,7 @@ func main() {
 		verbose:          *verbose,
 		metaData:         *metaData,
 		sampleReads:      uint(*sampleReads),
+		clientDelay:      *clientDelay,
 	}
 	fmt.Println(params)
 	fmt.Println()
@@ -277,7 +280,13 @@ func (params *Params) StartClients(cfg *aws.Config) {
 	for i := 0; i < int(params.numClients); i++ {
 		cfg.Endpoint = aws.String(params.endpoints[i%len(params.endpoints)])
 		go params.startClient(cfg)
-		time.Sleep(1 * time.Millisecond)
+		if params.clientDelay > 0 {
+			time.Sleep(time.Duration(params.clientDelay) *
+				time.Millisecond)
+		} else if params.clientDelay < 0 {
+			time.Sleep(time.Duration(mathrand.Intn(-params.clientDelay)) *
+				time.Millisecond)
+		}
 	}
 }
 
@@ -341,6 +350,7 @@ type Params struct {
 	verbose          bool
 	metaData         bool
 	sampleReads      uint
+	clientDelay      int
 }
 
 func (params Params) String() string {
@@ -354,6 +364,7 @@ func (params Params) String() string {
 	output += fmt.Sprintf("sampleReads:      %d\n", params.sampleReads)
 	output += fmt.Sprintf("verbose:       %d\n", params.verbose)
 	output += fmt.Sprintf("metaData:      %d\n", params.metaData)
+	output += fmt.Sprintf("clientDelay:      %d\n", params.clientDelay)
 	return output
 }
 
