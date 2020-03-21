@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	mathrand "math/rand"
+	"encoding/json"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -25,6 +26,7 @@ const (
 	opRead  = "Read"
 	opWrite = "Write"
 	opHeadObj = "HeadObj"
+	opDelete = "DeleteObj"
 	//max that can be deleted at a time via DeleteObjects()
 	commitSize = 1000
 )
@@ -88,6 +90,7 @@ func main() {
 	metaData := flag.Bool("metaData", false, "read obj metadata instead of obj itself")
 	sampleReads := flag.Int("sampleReads", 1, "number of reads of each sample")
 	clientDelay := flag.Int("clientDelay", 1, "delay in ms before client starts. if negative value provided delay will be randomized in interval [0, abs{clientDelay})")
+	jsonOutput := flag.Bool("jsonOutput", false, "print results in forma of json")
 
 	flag.Parse()
 
@@ -116,12 +119,11 @@ func main() {
 		metaData:         *metaData,
 		sampleReads:      uint(*sampleReads),
 		clientDelay:      *clientDelay,
+		jsonOutput:       *jsonOutput,
 	}
-	fmt.Println(params)
-	fmt.Println()
 
 	// Generate the data from which we will do the writting
-	fmt.Printf("Generating in-memory sample data... ")
+	params.printf("Generating in-memory sample data...\n")
 	timeGenData := time.Now()
 	bufferBytes = make([]byte, params.objectSize, params.objectSize)
 	_, err := rand.Read(bufferBytes)
@@ -129,8 +131,7 @@ func main() {
 		fmt.Printf("Could not allocate a buffer")
 		os.Exit(1)
 	}
-	fmt.Printf("Done (%s)\n", time.Since(timeGenData))
-	fmt.Println()
+	params.printf("Done (%s)\n", time.Since(timeGenData))
 
 	// Start the load clients and run a write test followed by a read test
 	cfg := &aws.Config{
@@ -143,75 +144,39 @@ func main() {
 
 	params.StartClients(cfg)
 
-	fmt.Printf("Running %s test...\n", opWrite)
-	writeResult := params.Run(opWrite)
-	fmt.Println()
+	testResults := make([]Result, 0, 3)
 
-	var readResult = Result{}
+	params.printf("Running %s test...\n", opWrite)
+	testResults = append(testResults, params.Run(opWrite))
+
 	if params.metaData {
-		fmt.Printf("Running %s test...\n", opHeadObj)
-		readResult = params.Run(opHeadObj)
-		fmt.Println()
+		params.printf("Running %s test...\n", opHeadObj)
+		testResults = append(testResults, params.Run(opHeadObj))
 	} else {
-		fmt.Printf("Running %s test...\n", opRead)
-		readResult = params.Run(opRead)
-		fmt.Println()
+		params.printf("Running %s test...\n", opRead)
+		testResults = append(testResults, params.Run(opHeadObj))
 	}
 
-	// Repeating the parameters of the test followed by the results
-	fmt.Println(params)
-	fmt.Println()
-	fmt.Println(writeResult)
-	fmt.Println()
-	fmt.Println(readResult)
+	if !*skipCleanup {
+		params.printf("Running %s test...\n", opDelete)
+		testResults = append(testResults, params.Run(opDelete))
+	}
 
 	// Do cleanup if required
-	if !*skipCleanup {
-		fmt.Println()
-		fmt.Printf("Cleaning up %d objects...\n", *numSamples)
-		delStartTime := time.Now()
+	if !*skipCleanup && bucket_created {
 		svc := s3.New(session.New(), cfg)
 
-		numSuccessfullyDeleted := 0
-
-		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
-		for i := 0; i < *numSamples; i++ {
-			bar := s3.ObjectIdentifier{
-				Key: aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
-			}
-			keyList = append(keyList, &bar)
-			if len(keyList) == commitSize || i == *numSamples-1 {
-				fmt.Printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-len(keyList)+1, i)
-				params := &s3.DeleteObjectsInput{
-					Bucket: aws.String(*bucketName),
-					Delete: &s3.Delete{
-						Objects: keyList}}
-				_, err := svc.DeleteObjects(params)
-				if err == nil {
-					numSuccessfullyDeleted += len(keyList)
-					fmt.Printf("Succeeded\n")
-				} else {
-					fmt.Printf("Failed (%v)\n", err)
-				}
-				//set cursor to 0 so we can move to the next batch.
-				keyList = keyList[:0]
-
-			}
-		}
-		fmt.Printf("Successfully deleted %d/%d objects in %s\n", numSuccessfullyDeleted, *numSamples, time.Since(delStartTime))
-
-		if bucket_created {
-			fmt.Printf("Deleting bucket...\n")
-			params := &s3.DeleteBucketInput{
-				Bucket: aws.String(*bucketName)}
-			_, err := svc.DeleteBucket(params)
-			if err == nil {
-				fmt.Printf("Succeeded\n")
-			} else {
-				fmt.Printf("Failed (%v)\n", err)
-			}
+		params.printf("Deleting bucket...\n")
+		dltinp := &s3.DeleteBucketInput{Bucket: aws.String(*bucketName)}
+		_, err := svc.DeleteBucket(dltinp)
+		if err == nil {
+			params.printf("Succeeded\n")
+		} else {
+			params.printf("Failed (%v)\n", err)
 		}
 	}
+
+	params.reportPrint(params.reportPrepare(testResults))
 }
 
 func (params *Params) Run(op string) Result {
@@ -225,21 +190,16 @@ func (params *Params) Run(op string) Result {
 	result := Result{opDurations: make([]float64, 0, opSamples), operation: op}
 	for i := uint(0); i < opSamples; i++ {
 		resp := <-params.responses
-		errorString := ""
 		if resp.err != nil {
-			result.numErrors++
-			errorString = fmt.Sprintf(", error: %s", resp.err)
+			errStr := fmt.Sprintf("%v(%d) completed in %0.2fs with error %s",
+				op, i+1, resp.duration.Seconds(), resp.err)
+			result.opErrors = append(result.opErrors, errStr)
 		} else {
 			result.bytesTransmitted = result.bytesTransmitted + params.objectSize
 			result.opDurations = append(result.opDurations, resp.duration.Seconds())
 			result.opTtfb = append(result.opTtfb, resp.ttfb.Seconds())
 		}
-		if params.verbose {
-			fmt.Printf("%v operation completed in %0.2fs (%d/%d) - %0.2fMB/s%s\n",
-				op, resp.duration.Seconds(), i+1, params.numSamples,
-				(float64(result.bytesTransmitted)/(1024*1024))/time.Since(startTime).Seconds(),
-				errorString)
-		}
+		params.printf("operation %s(%d) completed in %.2fs|%s\n", op, i+1, resp.duration.Seconds(), resp.err)
 	}
 
 	result.totalDuration = time.Since(startTime)
@@ -251,6 +211,27 @@ func (params *Params) Run(op string) Result {
 // Create an individual load request and submit it to the client queue
 func (params *Params) submitLoad(op string) {
 	bucket := aws.String(params.bucketName)
+	if op == opDelete {
+		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
+		for i := uint(0); i < params.numSamples; i++ {
+			bar := s3.ObjectIdentifier{
+				Key: aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i)),
+			}
+			keyList = append(keyList, &bar)
+			if len(keyList) == commitSize || i == params.numSamples-1 {
+				params.printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-uint(len(keyList))+1, i)
+				params.requests <- &s3.DeleteObjectsInput{
+					Bucket: aws.String(params.bucketName),
+					Delete: &s3.Delete{
+						Objects: keyList}}
+				//set cursor to 0 so we can move to the next batch.
+				keyList = keyList[:0]
+
+			}
+		}
+		return
+	}
+
 	opSamples := params.spo(op)
 	for i := uint(0); i < opSamples; i++ {
 		key := aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i % params.numSamples))
@@ -328,6 +309,11 @@ func (params *Params) startClient(cfg *aws.Config) {
 			if numBytes != params.objectSize {
 				err = fmt.Errorf("expected object length %d, actual %d, resp %v", params.objectSize, numBytes, resp)
 			}
+		case *s3.DeleteObjectsInput:
+			req, _ := svc.DeleteObjectsRequest(r)
+			err = req.Send()
+			ttfb = time.Since(putStartTime)
+			numBytes = 0
 		default:
 			panic("Developer error")
 		}
@@ -338,7 +324,6 @@ func (params *Params) startClient(cfg *aws.Config) {
 
 // Specifies the parameters for a given test
 type Params struct {
-	operation        string
 	requests         chan Req
 	responses        chan Resp
 	numSamples       uint
@@ -351,74 +336,145 @@ type Params struct {
 	metaData         bool
 	sampleReads      uint
 	clientDelay      int
+	jsonOutput       bool
 }
 
-func (params Params) String() string {
-	output := fmt.Sprintln("Test parameters")
-	output += fmt.Sprintf("endpoint(s):      %s\n", params.endpoints)
-	output += fmt.Sprintf("bucket:           %s\n", params.bucketName)
-	output += fmt.Sprintf("objectNamePrefix: %s\n", params.objectNamePrefix)
-	output += fmt.Sprintf("objectSize:       %0.4f MB\n", float64(params.objectSize)/(1024*1024))
-	output += fmt.Sprintf("numClients:       %d\n", params.numClients)
-	output += fmt.Sprintf("numSamples:       %d\n", params.numSamples)
-	output += fmt.Sprintf("sampleReads:      %d\n", params.sampleReads)
-	output += fmt.Sprintf("verbose:       %d\n", params.verbose)
-	output += fmt.Sprintf("metaData:      %d\n", params.metaData)
-	output += fmt.Sprintf("clientDelay:      %d\n", params.clientDelay)
-	return output
+func (params Params) printf(f string, args ...interface{}) {
+	if params.verbose {
+		fmt.Printf(f, args...)
+	}
 }
 
 // Contains the summary for a given test result
 type Result struct {
 	operation        string
 	bytesTransmitted int64
-	numErrors        int
 	opDurations      []float64
 	totalDuration    time.Duration
 	opTtfb           []float64
+	opErrors         []string
 }
 
-func (r Result) String() string {
-	report := fmt.Sprintf("Results Summary for %s Operation(s)\n", r.operation)
-	if r.operation == opHeadObj {
-		report += fmt.Sprintf("Total Reqs: %d\n", len(r.opDurations))
-	} else {
-		report += fmt.Sprintf("Total Transferred: %0.3f MB\n", float64(r.bytesTransmitted)/(1024*1024))
-		report += fmt.Sprintf("Total Throughput:  %0.2f MB/s\n", (float64(r.bytesTransmitted)/(1024*1024))/r.totalDuration.Seconds())
+func (r Result) report() map[string]interface{} {
+	ret := make(map[string]interface{})
+	ret["Operation"] = r.operation
+	ret["Total Requests Count"] = len(r.opDurations)
+	if r.operation != opHeadObj && r.operation != opDelete {
+		ret["Total Transferred (MB)"] = float64(r.bytesTransmitted)/(1024*1024)
+		ret["Total Throughput (MB/s)"] = (float64(r.bytesTransmitted)/(1024*1024))/r.totalDuration.Seconds()
 	}
-	report += fmt.Sprintf("Total Duration:    %0.3f s\n", r.totalDuration.Seconds())
-	report += fmt.Sprintf("Number of Errors:  %d\n", r.numErrors)
+	ret["Total Duration (s)"] = r.totalDuration.Seconds()
 
 	if len(r.opDurations) > 0 {
-		report += fmt.Sprintln("------------------------------------")
-		report += fmt.Sprintf("%s times Avg:       %0.3f s\n", r.operation, avg(r.opDurations))
-		report += fmt.Sprintf("%s times Max:       %0.3f s\n", r.operation, percentile(r.opDurations, 100))
-		report += fmt.Sprintf("%s times Min:       %0.3f s\n", r.operation, percentile(r.opDurations, 0))
-		report += fmt.Sprintf("%s times 99th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 99))
-		report += fmt.Sprintf("%s times 90th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 90))
-		report += fmt.Sprintf("%s times 75th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 75))
-		report += fmt.Sprintf("%s times 50th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 50))
-		report += fmt.Sprintf("%s times 25th %%ile: %0.3f s\n", r.operation, percentile(r.opDurations, 25))
+		ret["Duration Max"] = percentile(r.opDurations, 100)
+		ret["Duration Avg"] = avg(r.opDurations)
+		ret["Duration Min"] = percentile(r.opDurations, 0)
+		ret["Duration 99th-ile"] = percentile(r.opDurations, 99)
+		ret["Duration 90th-ile"] = percentile(r.opDurations, 90)
+		ret["Duration 75th-ile"] = percentile(r.opDurations, 75)
+		ret["Duration 50th-ile"] = percentile(r.opDurations, 50)
+		ret["Duration 25th-ile"] = percentile(r.opDurations, 25)
 	}
 
 	if len(r.opTtfb) > 0 {
-		report += fmt.Sprintln("------------------------------------")
-		report += fmt.Sprintf("%s ttfb Avg:       %0.3f s\n", r.operation, avg(r.opTtfb))
-		report += fmt.Sprintf("%s ttfb Max:       %0.3f s\n", r.operation, percentile(r.opTtfb, 100))
-		report += fmt.Sprintf("%s ttfb Min:       %0.3f s\n", r.operation, percentile(r.opTtfb, 0))
-		report += fmt.Sprintf("%s ttfb 99th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 99))
-		report += fmt.Sprintf("%s ttfb 90th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 90))
-		report += fmt.Sprintf("%s ttfb 75th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 75))
-		report += fmt.Sprintf("%s ttfb 50th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 50))
-		report += fmt.Sprintf("%s ttfb 25th %%ile: %0.3f s\n", r.operation, percentile(r.opTtfb, 25))
+		ret["Ttfb Max"] = percentile(r.opTtfb, 100)
+		ret["Ttfb Avg"] = avg(r.opTtfb)
+		ret["Ttfb Min"] = percentile(r.opTtfb, 0)
+		ret["Ttfb 99th-ile"] = percentile(r.opTtfb, 99)
+		ret["Ttfb 90th-ile"] = percentile(r.opTtfb, 90)
+		ret["Ttfb 75th-ile"] = percentile(r.opTtfb, 75)
+		ret["Ttfb 50th-ile"] = percentile(r.opTtfb, 50)
+		ret["Ttfb 25th-ile"] = percentile(r.opTtfb, 25)
 	}
+
+	ret["Errors Count"] = len(r.opErrors)
+	ret["Errors"] = r.opErrors
+	return ret
+}
+
+func (params Params) report() map[string]interface{} {
+	ret := make(map[string]interface{})
+	ret["endpoints"] =  params.endpoints
+	ret["bucket"] = params.bucketName
+	ret["objectNamePrefix"] = params.objectNamePrefix
+	ret["objectSize (MB)"] = float64(params.objectSize)/(1024*1024)
+	ret["numClients"] = params.numClients
+	ret["numSamples"] = params.numSamples
+	ret["sampleReads"] = params.sampleReads
+	ret["verbose"] = params.verbose
+	ret["metaData"] = params.metaData
+	ret["clientDelay"] = params.clientDelay
+	ret["jsonOutput"] = params.jsonOutput
+	return ret
+}
+
+func (params Params) reportPrepare(tests []Result) map[string]interface{} {
+	report := make(map[string]interface{})
+	report["Parameters"] = params.report()
+	testreps := make([]map[string]interface{}, 0, len(tests))
+	for _, r := range tests {
+		testreps = append(testreps, r.report())
+	}
+	report["Tests"] = testreps
 	return report
+}
+
+func mapPrint(m map[string]interface{}, prefix string) {
+	for k,v := range m {
+		fmt.Printf("%s %-27s", prefix, k+":")
+		switch val := v.(type) {
+		case []string:
+			if len(val) == 0 {
+				fmt.Printf(" []\n")
+			} else {
+				fmt.Println()
+				for _, s := range val {
+					fmt.Printf("%s%s %s\n", prefix, prefix, s)
+				}
+			}
+		case map[string]interface{}:
+			fmt.Println()
+			mapPrint(val, prefix + "   ")
+		case []map[string]interface{}:
+			if len(val) == 0 {
+				fmt.Printf(" []\n")
+			} else {
+				for _, m := range val {
+					fmt.Println()
+					mapPrint(m, prefix + "   ")
+				}
+			}
+		case float64:
+			fmt.Printf(" %.3f\n", val)
+		default:
+			fmt.Printf(" %v\n", val)
+		}
+	}
+}
+
+func (params Params) reportPrint(report map[string]interface{}) {
+	if params.jsonOutput {
+		b, err := json.Marshal(report)
+		if err != nil {
+			fmt.Println("Cannot generate JSON report %v", err)
+		}
+		fmt.Println(string(b))
+		return
+	}
+
+	mapPrint(report, "")
 }
 
 // samples per operation
 func (params Params) spo(op string) uint {
 	if op == opWrite {
 		return params.numSamples
+	} else if op == opDelete {
+		ret := params.numSamples / commitSize
+		if params.numSamples % commitSize > 0 {
+			ret++
+		}
+		return ret
 	}
 
 	return params.numSamples * params.sampleReads
