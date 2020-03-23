@@ -26,7 +26,6 @@ const (
 	opRead  = "Read"
 	opWrite = "Write"
 	opHeadObj = "HeadObj"
-	opDelete = "DeleteObj"
 	//max that can be deleted at a time via DeleteObjects()
 	commitSize = 1000
 )
@@ -154,25 +153,53 @@ func main() {
 		testResults = append(testResults, params.Run(opHeadObj))
 	} else {
 		params.printf("Running %s test...\n", opRead)
-		testResults = append(testResults, params.Run(opHeadObj))
-	}
-
-	if !*skipCleanup {
-		params.printf("Running %s test...\n", opDelete)
-		testResults = append(testResults, params.Run(opDelete))
+		testResults = append(testResults, params.Run(opRead))
 	}
 
 	// Do cleanup if required
-	if !*skipCleanup && bucket_created {
+	if !*skipCleanup {
+		params.printf("Cleaning up %d objects...\n", *numSamples)
+		delStartTime := time.Now()
 		svc := s3.New(session.New(), cfg)
 
-		params.printf("Deleting bucket...\n")
-		dltinp := &s3.DeleteBucketInput{Bucket: aws.String(*bucketName)}
-		_, err := svc.DeleteBucket(dltinp)
-		if err == nil {
-			params.printf("Succeeded\n")
-		} else {
-			params.printf("Failed (%v)\n", err)
+		numSuccessfullyDeleted := 0
+
+		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
+		for i := 0; i < *numSamples; i++ {
+			bar := s3.ObjectIdentifier{
+				Key: aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
+			}
+			keyList = append(keyList, &bar)
+			if len(keyList) == commitSize || i == *numSamples-1 {
+				params.printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-len(keyList)+1, i)
+				dltpar := &s3.DeleteObjectsInput{
+					Bucket: aws.String(*bucketName),
+					Delete: &s3.Delete{
+						Objects: keyList}}
+				_, err := svc.DeleteObjects(dltpar)
+				if err == nil {
+					numSuccessfullyDeleted += len(keyList)
+					params.printf("Succeeded\n")
+				} else {
+					params.printf("Failed (%v)\n", err)
+				}
+				//set cursor to 0 so we can move to the next batch.
+				keyList = keyList[:0]
+
+			}
+		}
+		params.printf("Successfully deleted %d/%d objects in %s\n", numSuccessfullyDeleted, *numSamples, time.Since(delStartTime))
+
+		if bucket_created {
+			params.printf("Deleting bucket...\n")
+			dltpar := &s3.DeleteBucketInput{
+				Bucket: aws.String(*bucketName)}
+			_, err := svc.DeleteBucket(dltpar)
+			if err == nil {
+				params.printf("Succeeded\n")
+			} else {
+				params.printf("Failed (%v)\n", err)
+			}
 		}
 	}
 
@@ -211,27 +238,6 @@ func (params *Params) Run(op string) Result {
 // Create an individual load request and submit it to the client queue
 func (params *Params) submitLoad(op string) {
 	bucket := aws.String(params.bucketName)
-	if op == opDelete {
-		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
-		for i := uint(0); i < params.numSamples; i++ {
-			bar := s3.ObjectIdentifier{
-				Key: aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i)),
-			}
-			keyList = append(keyList, &bar)
-			if len(keyList) == commitSize || i == params.numSamples-1 {
-				params.printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-uint(len(keyList))+1, i)
-				params.requests <- &s3.DeleteObjectsInput{
-					Bucket: aws.String(params.bucketName),
-					Delete: &s3.Delete{
-						Objects: keyList}}
-				//set cursor to 0 so we can move to the next batch.
-				keyList = keyList[:0]
-
-			}
-		}
-		return
-	}
-
 	opSamples := params.spo(op)
 	for i := uint(0); i < opSamples; i++ {
 		key := aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i % params.numSamples))
@@ -309,11 +315,6 @@ func (params *Params) startClient(cfg *aws.Config) {
 			if numBytes != params.objectSize {
 				err = fmt.Errorf("expected object length %d, actual %d, resp %v", params.objectSize, numBytes, resp)
 			}
-		case *s3.DeleteObjectsInput:
-			req, _ := svc.DeleteObjectsRequest(r)
-			err = req.Send()
-			ttfb = time.Since(putStartTime)
-			numBytes = 0
 		default:
 			panic("Developer error")
 		}
@@ -359,7 +360,7 @@ func (r Result) report() map[string]interface{} {
 	ret := make(map[string]interface{})
 	ret["Operation"] = r.operation
 	ret["Total Requests Count"] = len(r.opDurations)
-	if r.operation != opHeadObj && r.operation != opDelete {
+	if r.operation != opHeadObj {
 		ret["Total Transferred (MB)"] = float64(r.bytesTransmitted)/(1024*1024)
 		ret["Total Throughput (MB/s)"] = (float64(r.bytesTransmitted)/(1024*1024))/r.totalDuration.Seconds()
 	}
@@ -469,12 +470,6 @@ func (params Params) reportPrint(report map[string]interface{}) {
 func (params Params) spo(op string) uint {
 	if op == opWrite {
 		return params.numSamples
-	} else if op == opDelete {
-		ret := params.numSamples / commitSize
-		if params.numSamples % commitSize > 0 {
-			ret++
-		}
-		return ret
 	}
 
 	return params.numSamples * params.sampleReads
