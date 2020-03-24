@@ -26,8 +26,6 @@ const (
 	opRead  = "Read"
 	opWrite = "Write"
 	opHeadObj = "HeadObj"
-	//max that can be deleted at a time via DeleteObjects()
-	commitSize = 1000
 )
 
 var bufferBytes []byte
@@ -90,6 +88,7 @@ func main() {
 	sampleReads := flag.Int("sampleReads", 1, "number of reads of each sample")
 	clientDelay := flag.Int("clientDelay", 1, "delay in ms before client starts. if negative value provided delay will be randomized in interval [0, abs{clientDelay})")
 	jsonOutput := flag.Bool("jsonOutput", false, "print results in forma of json")
+	deleteAtOnce := flag.Int("deleteAtOnce", 1000, "number of objs to delete at once")
 
 	flag.Parse()
 
@@ -101,6 +100,11 @@ func main() {
 	if *endpoint == "" {
 		fmt.Println("You need to specify endpoint(s)")
 		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
+	if *deleteAtOnce < 1 {
+		fmt.Println("Caanot delete less than 1 obj at once")
 		os.Exit(1)
 	}
 
@@ -119,6 +123,7 @@ func main() {
 		sampleReads:      uint(*sampleReads),
 		clientDelay:      *clientDelay,
 		jsonOutput:       *jsonOutput,
+		deleteAtOnce:     *deleteAtOnce,
 	}
 
 	// Generate the data from which we will do the writting
@@ -164,13 +169,13 @@ func main() {
 
 		numSuccessfullyDeleted := 0
 
-		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
+		keyList := make([]*s3.ObjectIdentifier, 0, params.deleteAtOnce)
 		for i := 0; i < *numSamples; i++ {
 			bar := s3.ObjectIdentifier{
 				Key: aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
 			}
 			keyList = append(keyList, &bar)
-			if len(keyList) == commitSize || i == *numSamples-1 {
+			if len(keyList) == params.deleteAtOnce || i == *numSamples-1 {
 				params.printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-len(keyList)+1, i)
 				dltpar := &s3.DeleteObjectsInput{
 					Bucket: aws.String(*bucketName),
@@ -338,6 +343,7 @@ type Params struct {
 	sampleReads      uint
 	clientDelay      int
 	jsonOutput       bool
+	deleteAtOnce     int
 }
 
 func (params Params) printf(f string, args ...interface{}) {
@@ -406,6 +412,7 @@ func (params Params) report() map[string]interface{} {
 	ret["metaData"] = params.metaData
 	ret["clientDelay"] = params.clientDelay
 	ret["jsonOutput"] = params.jsonOutput
+	ret["deleteAtOnce"] = params.deleteAtOnce
 	return ret
 }
 
