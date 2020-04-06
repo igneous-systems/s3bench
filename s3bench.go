@@ -26,6 +26,8 @@ const (
 	opRead  = "Read"
 	opWrite = "Write"
 	opHeadObj = "HeadObj"
+  opGetObjTag = "GetObjTag"
+  opPutObjTag = "PutObjTag"
 )
 
 var bufferBytes []byte
@@ -89,6 +91,8 @@ func main() {
 	clientDelay := flag.Int("clientDelay", 1, "delay in ms before client starts. if negative value provided delay will be randomized in interval [0, abs{clientDelay})")
 	jsonOutput := flag.Bool("jsonOutput", false, "print results in forma of json")
 	deleteAtOnce := flag.Int("deleteAtOnce", 1000, "number of objs to delete at once")
+  putObjTag := flag.Bool("putObjTag", false, "put object's tags")
+  getObjTag := flag.Bool("getObjTag", false, "get object's tags")
 
 	flag.Parse()
 
@@ -107,6 +111,10 @@ func main() {
 		fmt.Println("Caanot delete less than 1 obj at once")
 		os.Exit(1)
 	}
+  if *metaData && *getObjTag {
+		fmt.Println("\"-metaData\" and \"-getObjTag\" cannt be specified simultaneously")
+		os.Exit(1)
+  }
 
 	// Setup and print summary of the accepted parameters
 	params := Params{
@@ -124,6 +132,8 @@ func main() {
 		clientDelay:      *clientDelay,
 		jsonOutput:       *jsonOutput,
 		deleteAtOnce:     *deleteAtOnce,
+    putObjTag:        *putObjTag,
+    getObjTag:        *getObjTag,
 	}
 
 	// Generate the data from which we will do the writting
@@ -153,7 +163,14 @@ func main() {
 	params.printf("Running %s test...\n", opWrite)
 	testResults = append(testResults, params.Run(opWrite))
 
-	if params.metaData {
+  if params.putObjTag {
+		params.printf("Running %s test...\n", opPutObjTag)
+		testResults = append(testResults, params.Run(opPutObjTag))
+  }
+  if params.getObjTag {
+		params.printf("Running %s test...\n", opGetObjTag)
+		testResults = append(testResults, params.Run(opGetObjTag))
+  } else if params.metaData {
 		params.printf("Running %s test...\n", opHeadObj)
 		testResults = append(testResults, params.Run(opHeadObj))
 	} else {
@@ -262,7 +279,29 @@ func (params *Params) submitLoad(op string) {
 				Bucket: bucket,
 				Key:    key,
 			}
-		} else {
+		} else if op == opPutObjTag {
+			params.requests <- &s3.PutObjectTaggingInput{
+				Bucket: bucket,
+				Key:    key,
+        Tagging: &s3.Tagging{
+            TagSet: []*s3.Tag{
+                {
+                    Key:   aws.String("Key1"),
+                    Value: aws.String("Value1"),
+                },
+                {
+                    Key:   aws.String("Key2"),
+                    Value: aws.String("Value2"),
+                },
+            },
+        },
+			}
+    } else if op == opGetObjTag {
+			params.requests <- &s3.GetObjectTaggingInput{
+				Bucket: bucket,
+				Key:    key,
+			}
+    } else {
 			panic("Developer error")
 		}
 	}
@@ -320,6 +359,14 @@ func (params *Params) startClient(cfg *aws.Config) {
 			if numBytes != params.objectSize {
 				err = fmt.Errorf("expected object length %d, actual %d, resp %v", params.objectSize, numBytes, resp)
 			}
+    case *s3.PutObjectTaggingInput:
+			req, _ := svc.PutObjectTaggingRequest(r)
+			err = req.Send()
+			ttfb = time.Since(putStartTime)
+		case *s3.GetObjectTaggingInput:
+			req, _ := svc.GetObjectTaggingRequest(r)
+			err = req.Send()
+			ttfb = time.Since(putStartTime)
 		default:
 			panic("Developer error")
 		}
@@ -344,6 +391,8 @@ type Params struct {
 	clientDelay      int
 	jsonOutput       bool
 	deleteAtOnce     int
+  putObjTag        bool
+  getObjTag        bool
 }
 
 func (params Params) printf(f string, args ...interface{}) {
