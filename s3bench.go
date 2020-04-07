@@ -22,6 +22,11 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
+var (
+	gitHash   string
+	buildDate string
+)
+
 const (
 	opRead  = "Read"
 	opWrite = "Write"
@@ -96,8 +101,14 @@ func main() {
 	numTags := flag.Int("numTags", 10, "number of tags to create, for objects it should in range [1..10]")
 	tagNamePrefix := flag.String("tagNamePrefix", "tag_name_", "prefix of the tag name that will be used")
 	tagValPrefix := flag.String("tagValPrefix", "tag_val_", "prefix of the tag value that will be used")
+	version := flag.Bool("version", false, "print version info")
 
 	flag.Parse()
+
+	if *version {
+		fmt.Printf("%s-%s\n", buildDate, gitHash)
+		os.Exit(0)
+	}
 
 	if *numClients > *numSamples || *numSamples < 1 {
 		fmt.Printf("numClients(%d) needs to be less than numSamples(%d) and greater than 0\n", *numClients, *numSamples)
@@ -497,6 +508,7 @@ func (params Params) report() map[string]interface{} {
 
 func (params Params) reportPrepare(tests []Result) map[string]interface{} {
 	report := make(map[string]interface{})
+	report["Version"] = fmt.Sprintf("%s-%s", buildDate, gitHash)
 	report["Parameters"] = params.report()
 	testreps := make([]map[string]interface{}, 0, len(tests))
 	for _, r := range tests {
