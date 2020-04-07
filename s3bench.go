@@ -86,14 +86,14 @@ func main() {
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
 	skipCleanup := flag.Bool("skipCleanup", false, "skip deleting objects created by this tool at the end of the run")
 	verbose := flag.Bool("verbose", false, "print verbose per thread status")
-	metaData := flag.Bool("metaData", false, "read obj metadata instead of obj itself")
+	headObj := flag.Bool("headObj", false, "head-object request instead of reading obj content")
 	sampleReads := flag.Int("sampleReads", 1, "number of reads of each sample")
 	clientDelay := flag.Int("clientDelay", 1, "delay in ms before client starts. if negative value provided delay will be randomized in interval [0, abs{clientDelay})")
 	jsonOutput := flag.Bool("jsonOutput", false, "print results in forma of json")
 	deleteAtOnce := flag.Int("deleteAtOnce", 1000, "number of objs to delete at once")
 	putObjTag := flag.Bool("putObjTag", false, "put object's tags")
 	getObjTag := flag.Bool("getObjTag", false, "get object's tags")
-	numTags := flag.Int("numTags", 0, "number if tags")
+	numTags := flag.Int("numTags", 10, "number of tags")
 
 	flag.Parse()
 
@@ -115,8 +115,8 @@ func main() {
 	if *getObjTag {
 		*putObjTag = true
 
-		if *metaData {
-			fmt.Println("\"-metaData\" and \"-getObjTag\" cannt be specified simultaneously")
+		if *headObj {
+			fmt.Println("\"-headObj\" and \"-getObjTag\" cannt be specified simultaneously")
 			os.Exit(1)
 		}
 	}
@@ -140,7 +140,7 @@ func main() {
 		bucketName:       *bucketName,
 		endpoints:        strings.Split(*endpoint, ","),
 		verbose:          *verbose,
-		metaData:         *metaData,
+		headObj:          *headObj,
 		sampleReads:      uint(*sampleReads),
 		clientDelay:      *clientDelay,
 		jsonOutput:       *jsonOutput,
@@ -184,7 +184,7 @@ func main() {
 	if params.getObjTag {
 		params.printf("Running %s test...\n", opGetObjTag)
 		testResults = append(testResults, params.Run(opGetObjTag))
-	} else if params.metaData {
+	} else if params.headObj {
 		params.printf("Running %s test...\n", opHeadObj)
 		testResults = append(testResults, params.Run(opHeadObj))
 	} else {
@@ -417,7 +417,7 @@ type Params struct {
 	bucketName       string
 	endpoints        []string
 	verbose          bool
-	metaData         bool
+	headObj          bool
 	sampleReads      uint
 	clientDelay      int
 	jsonOutput       bool
@@ -490,7 +490,7 @@ func (params Params) report() map[string]interface{} {
 	ret["numSamples"] = params.numSamples
 	ret["sampleReads"] = params.sampleReads
 	ret["verbose"] = params.verbose
-	ret["metaData"] = params.metaData
+	ret["headObj"] = params.headObj
 	ret["clientDelay"] = params.clientDelay
 	ret["jsonOutput"] = params.jsonOutput
 	ret["deleteAtOnce"] = params.deleteAtOnce
