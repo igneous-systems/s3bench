@@ -94,6 +94,8 @@ func main() {
 	putObjTag := flag.Bool("putObjTag", false, "put object's tags")
 	getObjTag := flag.Bool("getObjTag", false, "get object's tags")
 	numTags := flag.Int("numTags", 10, "number of tags to create, for objects it should in range [1..10]")
+	tagNamePrefix := flag.String("tagNamePrefix", "tag_name_", "prefix of the tag name that will be used")
+	tagValPrefix := flag.String("tagValPrefix", "tag_val_", "prefix of the tag value that will be used")
 
 	flag.Parse()
 
@@ -138,6 +140,9 @@ func main() {
 		getObjTag:        *getObjTag,
 		numTags:          uint(*numTags),
 		readObj:          !(*putObjTag || *getObjTag || *headObj),
+		tagNamePrefix:    *tagNamePrefix,
+		tagValPrefix:     *tagValPrefix,
+
 	}
 
 	// Generate the data from which we will do the writting
@@ -162,7 +167,7 @@ func main() {
 
 	params.StartClients(cfg)
 
-	testResults := make([]Result, 2, 5)
+	testResults := make([]Result, 1, 2)
 
 	params.printf("Running %s test...\n", opWrite)
 	testResults = append(testResults, params.Run(opWrite))
@@ -297,19 +302,17 @@ func (params *Params) submitLoad(op string) {
 		} else if op == opPutObjTag {
 			tagSet := make([]*s3.Tag, 0, params.numTags)
 			for iTag := uint(0); iTag < params.numTags; iTag++ {
-				key   := fmt.Sprintf("%s%d", "key_",   iTag);
-				value := fmt.Sprintf("%s%d", "value_", iTag)
+				tag_name := fmt.Sprintf("%s%d", params.tagNamePrefix, iTag)
+				tag_value := fmt.Sprintf("%s%d", params.tagValPrefix, iTag)
 				tagSet = append(tagSet, &s3.Tag {
-						Key:   &key,
-						Value: &value,
+						Key:   &tag_name,
+						Value: &tag_value,
 						})
 			}
 			params.requests <- &s3.PutObjectTaggingInput{
 				Bucket: bucket,
 				Key:    key,
-				Tagging: &s3.Tagging{
-						TagSet: tagSet,
-				},
+				Tagging: &s3.Tagging{ TagSet: tagSet, },
 			}
 		} else if op == opGetObjTag {
 			params.requests <- &s3.GetObjectTaggingInput{
@@ -378,10 +381,12 @@ func (params *Params) startClient(cfg *aws.Config) {
 			req, _ := svc.PutObjectTaggingRequest(r)
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
+			numBytes = 0
 		case *s3.GetObjectTaggingInput:
 			req, _ := svc.GetObjectTaggingRequest(r)
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
+			numBytes = 0
 		default:
 			panic("Developer error")
 		}
@@ -410,6 +415,8 @@ type Params struct {
 	getObjTag        bool
 	numTags          uint
 	readObj          bool
+	tagNamePrefix    string
+	tagValPrefix     string
 }
 
 func (params Params) printf(f string, args ...interface{}) {
@@ -432,7 +439,7 @@ func (r Result) report() map[string]interface{} {
 	ret := make(map[string]interface{})
 	ret["Operation"] = r.operation
 	ret["Total Requests Count"] = len(r.opDurations)
-	if r.operation != opHeadObj {
+	if r.operation == opWrite || r.operation == opRead {
 		ret["Total Transferred (MB)"] = float64(r.bytesTransmitted)/(1024*1024)
 		ret["Total Throughput (MB/s)"] = (float64(r.bytesTransmitted)/(1024*1024))/r.totalDuration.Seconds()
 	}
@@ -483,6 +490,8 @@ func (params Params) report() map[string]interface{} {
 	ret["putObjTag"] = params.putObjTag
 	ret["getObjTag"] = params.getObjTag
 	ret["readObj"] = params.readObj
+	ret["tagNamePrefix"] = params.tagNamePrefix
+	ret["tagValPrefix"] = params.tagValPrefix
 	return ret
 }
 
