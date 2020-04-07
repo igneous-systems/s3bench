@@ -112,20 +112,20 @@ func main() {
 		fmt.Println("Cann`t delete less than 1 obj at once")
 		os.Exit(1)
 	}
-	if *metaData && *getObjTag {
-		fmt.Println("\"-metaData\" and \"-getObjTag\" cannt be specified simultaneously")
-		os.Exit(1)
-	}
-	if *metaData && *putObjTag {
-		fmt.Println("\"-metaData\" and \"-putObjTag\" cannt be specified simultaneously")
-		os.Exit(1)
+	if *getObjTag {
+		*putObjTag = true
+
+		if *metaData {
+			fmt.Println("\"-metaData\" and \"-getObjTag\" cannt be specified simultaneously")
+			os.Exit(1)
+		}
 	}
 	if *putObjTag && *numTags == 0 {
 		fmt.Println("You must specify \"-numTags\" in range [1..10]")
 		os.Exit(1)
 	}
-	if *numTags < 1 || *numTags > 10 {
-		fmt.Println("\"-numTags\" must be in range [1..10]")
+	if *numTags < 1 {
+		fmt.Println("\"-numTags\" should be in range [1..10]")
 		os.Exit(1)
 	}
 
@@ -202,8 +202,25 @@ func main() {
 
 		keyList := make([]*s3.ObjectIdentifier, 0, params.deleteAtOnce)
 		for i := 0; i < *numSamples; i++ {
+			objName := fmt.Sprintf("%s%d", *objectNamePrefix, i)
+			key := aws.String(objName)
+
+			if params.putObjTag {
+				deleteObjectTaggingInput := &s3.DeleteObjectTaggingInput{
+						Bucket: aws.String(*bucketName),
+						Key:    key,
+				}
+				_, err := svc.DeleteObjectTagging(deleteObjectTaggingInput)
+				if params.verbose {
+					if err != nil {
+						fmt.Println(err.Error())
+					} else {
+						fmt.Printf("Tags for %s deleted\n", objName)
+					}
+				}
+			}
 			bar := s3.ObjectIdentifier{
-				Key: aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
+				Key: key,
 			}
 			keyList = append(keyList, &bar)
 			if len(keyList) == params.deleteAtOnce || i == *numSamples-1 {
