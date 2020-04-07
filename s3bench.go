@@ -93,7 +93,7 @@ func main() {
 	deleteAtOnce := flag.Int("deleteAtOnce", 1000, "number of objs to delete at once")
 	putObjTag := flag.Bool("putObjTag", false, "put object's tags")
 	getObjTag := flag.Bool("getObjTag", false, "get object's tags")
-	numTags := flag.Int("numTags", 10, "number of tags")
+	numTags := flag.Int("numTags", 10, "number of tags to create, for objects it should in range [1..10]")
 
 	flag.Parse()
 
@@ -109,23 +109,12 @@ func main() {
 	}
 
 	if *deleteAtOnce < 1 {
-		fmt.Println("Cann`t delete less than 1 obj at once")
+		fmt.Println("Cannot delete less than 1 obj at once")
 		os.Exit(1)
 	}
-	if *getObjTag {
-		*putObjTag = true
 
-		if *headObj {
-			fmt.Println("\"-headObj\" and \"-getObjTag\" cannt be specified simultaneously")
-			os.Exit(1)
-		}
-	}
-	if *putObjTag && *numTags == 0 {
-		fmt.Println("You must specify \"-numTags\" in range [1..10]")
-		os.Exit(1)
-	}
 	if *numTags < 1 {
-		fmt.Println("\"-numTags\" should be in range [1..10]")
+		fmt.Println("-numTags cannot be less than 1")
 		os.Exit(1)
 	}
 
@@ -145,9 +134,10 @@ func main() {
 		clientDelay:      *clientDelay,
 		jsonOutput:       *jsonOutput,
 		deleteAtOnce:     *deleteAtOnce,
-		putObjTag:        *putObjTag,
+		putObjTag:        *putObjTag || *getObjTag,
 		getObjTag:        *getObjTag,
 		numTags:          uint(*numTags),
+		readObj:          !(*putObjTag || *getObjTag || *headObj),
 	}
 
 	// Generate the data from which we will do the writting
@@ -172,7 +162,7 @@ func main() {
 
 	params.StartClients(cfg)
 
-	testResults := make([]Result, 0, 3)
+	testResults := make([]Result, 2, 5)
 
 	params.printf("Running %s test...\n", opWrite)
 	testResults = append(testResults, params.Run(opWrite))
@@ -184,10 +174,12 @@ func main() {
 	if params.getObjTag {
 		params.printf("Running %s test...\n", opGetObjTag)
 		testResults = append(testResults, params.Run(opGetObjTag))
-	} else if params.headObj {
+	}
+	if params.headObj {
 		params.printf("Running %s test...\n", opHeadObj)
 		testResults = append(testResults, params.Run(opHeadObj))
-	} else {
+	}
+	if params.readObj {
 		params.printf("Running %s test...\n", opRead)
 		testResults = append(testResults, params.Run(opRead))
 	}
@@ -211,17 +203,9 @@ func main() {
 						Key:    key,
 				}
 				_, err := svc.DeleteObjectTagging(deleteObjectTaggingInput)
-				if params.verbose {
-					if err != nil {
-						fmt.Println(err.Error())
-					} else {
-						fmt.Printf("Tags for %s deleted\n", objName)
-					}
-				}
+				params.printf("Delete tags %s |err %v\n", objName, err)
 			}
-			bar := s3.ObjectIdentifier{
-				Key: key,
-			}
+			bar := s3.ObjectIdentifier{ Key: key, }
 			keyList = append(keyList, &bar)
 			if len(keyList) == params.deleteAtOnce || i == *numSamples-1 {
 				params.printf("Deleting a batch of %d objects in range {%d, %d}... ", len(keyList), i-len(keyList)+1, i)
@@ -425,6 +409,7 @@ type Params struct {
 	putObjTag        bool
 	getObjTag        bool
 	numTags          uint
+	readObj          bool
 }
 
 func (params Params) printf(f string, args ...interface{}) {
@@ -494,6 +479,10 @@ func (params Params) report() map[string]interface{} {
 	ret["clientDelay"] = params.clientDelay
 	ret["jsonOutput"] = params.jsonOutput
 	ret["deleteAtOnce"] = params.deleteAtOnce
+	ret["numTags"] = params.numTags
+	ret["putObjTag"] = params.putObjTag
+	ret["getObjTag"] = params.getObjTag
+	ret["readObj"] = params.readObj
 	return ret
 }
 
