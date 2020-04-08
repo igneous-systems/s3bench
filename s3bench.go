@@ -102,6 +102,7 @@ func main() {
 	tagNamePrefix := flag.String("tagNamePrefix", "tag_name_", "prefix of the tag name that will be used")
 	tagValPrefix := flag.String("tagValPrefix", "tag_val_", "prefix of the tag value that will be used")
 	version := flag.Bool("version", false, "print version info")
+	reportFormat := flag.String("reportFormat", "Version;Parameters;Parameters:numClients;Parameters:numSamples;Parameters:objectSize (MB);Parameters:sampleReads;Parameters:clientDelay;Parameters:readObj;Parameters:headObj;Parameters:putObjTag;Parameters:getObjTag;Tests:Operation;Tests:Total Requests Count;Tests:Errors Count;Tests:Total Throughput (MB/s);Tests:Duration Max;Tests:Duration Avg;Tests:Duration Min;Tests:Ttfb Max;Tests:Ttfb Avg;Tests:Ttfb Min;-Tests:Duration 25th-ile;-Tests:Duration 50th-ile;-Tests:Duration 75th-ile;-Tests:Ttfb 25th-ile;-Tests:Ttfb 50th-ile;-Tests:Ttfb 75th-ile;", "rearrange output fields")
 
 	flag.Parse()
 
@@ -153,6 +154,7 @@ func main() {
 		readObj:          !(*putObjTag || *getObjTag || *headObj),
 		tagNamePrefix:    *tagNamePrefix,
 		tagValPrefix:     *tagValPrefix,
+		reportFormat:     *reportFormat,
 
 	}
 
@@ -178,7 +180,7 @@ func main() {
 
 	params.StartClients(cfg)
 
-	testResults := make([]Result, 1, 2)
+	testResults := []Result{}
 
 	params.printf("Running %s test...\n", opWrite)
 	testResults = append(testResults, params.Run(opWrite))
@@ -428,6 +430,7 @@ type Params struct {
 	readObj          bool
 	tagNamePrefix    string
 	tagValPrefix     string
+	reportFormat     string
 }
 
 func (params Params) printf(f string, args ...interface{}) {
@@ -503,6 +506,7 @@ func (params Params) report() map[string]interface{} {
 	ret["readObj"] = params.readObj
 	ret["tagNamePrefix"] = params.tagNamePrefix
 	ret["tagValPrefix"] = params.tagValPrefix
+	ret["reportFormat"] = params.reportFormat
 	return ret
 }
 
@@ -518,8 +522,65 @@ func (params Params) reportPrepare(tests []Result) map[string]interface{} {
 	return report
 }
 
-func mapPrint(m map[string]interface{}, prefix string) {
-	for k,v := range m {
+func indexOf(sls []string, s string) int {
+	ret := -1
+	for i, v := range sls {
+		if v == s {
+			ret = i
+			break
+		}
+	}
+	return ret
+}
+
+func keysSort(keys []string, format []string) []string {
+	sort.Strings(keys)
+	cur_formated := 0
+
+	for _, fv := range format {
+		fv = strings.TrimSpace(fv)
+		should_del := strings.HasPrefix(fv, "-")
+		if should_del {
+			fv = fv[1:]
+		}
+		ci := indexOf(keys, fv)
+		if ci < 0 {
+			continue
+		}
+		// delete old pos
+		keys = append(keys[:ci], keys[ci+1:]...)
+
+		if !should_del {
+			// insert new pos
+			keys = append(keys[:cur_formated], append([]string{fv}, keys[cur_formated:]...)...)
+			cur_formated++
+		}
+	}
+
+	return keys
+}
+
+func formatFilter(format []string, key string) []string {
+	ret := []string{}
+	for _, v := range format {
+		if strings.HasPrefix(v, key + ":") {
+			ret = append(ret, v[len(key + ":"):])
+		} else if strings.HasPrefix(v, "-" + key + ":") {
+			ret = append(ret, "-" + v[len("-" + key + ":"):])
+		}
+	}
+
+	return ret
+}
+
+func mapPrint(m map[string]interface{}, repFormat []string, prefix string) {
+	var mkeys []string
+	for k,_ := range m {
+		mkeys = append(mkeys, k)
+	}
+	mkeys = keysSort(mkeys, repFormat)
+	for _, k := range mkeys {
+		v := m[k]
 		fmt.Printf("%s %-27s", prefix, k+":")
 		switch val := v.(type) {
 		case []string:
@@ -533,14 +594,15 @@ func mapPrint(m map[string]interface{}, prefix string) {
 			}
 		case map[string]interface{}:
 			fmt.Println()
-			mapPrint(val, prefix + "   ")
+			mapPrint(val, formatFilter(repFormat, k), prefix + "   ")
 		case []map[string]interface{}:
 			if len(val) == 0 {
 				fmt.Printf(" []\n")
 			} else {
+				val_format := formatFilter(repFormat, k)
 				for _, m := range val {
 					fmt.Println()
-					mapPrint(m, prefix + "   ")
+					mapPrint(m, val_format, prefix + "   ")
 				}
 			}
 		case float64:
@@ -561,7 +623,7 @@ func (params Params) reportPrint(report map[string]interface{}) {
 		return
 	}
 
-	mapPrint(report, "")
+	mapPrint(report, strings.Split(params.reportFormat, ";"), "")
 }
 
 // samples per operation
