@@ -359,7 +359,7 @@ func (params *Params) startClient(cfg *aws.Config) {
 		putStartTime := time.Now()
 		var ttfb time.Duration
 		var err error
-		numBytes := params.objectSize
+		var numBytes int64 = 0
 
 		switch r := request.(type) {
 		case *s3.PutObjectInput:
@@ -368,22 +368,25 @@ func (params *Params) startClient(cfg *aws.Config) {
 			req.HTTPRequest.Header.Add("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
+			if err == nil {
+				numBytes = params.objectSize
+			}
 		case *s3.GetObjectInput:
 			req, resp := svc.GetObjectRequest(r)
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
-			numBytes = 0
 			if err == nil {
 				numBytes, err = io.Copy(ioutil.Discard, resp.Body)
 			}
-			if numBytes != params.objectSize {
+			if err != nil {
+				numBytes = 0
+			} else if numBytes != params.objectSize {
 				err = fmt.Errorf("expected object length %d, actual %d", params.objectSize, numBytes)
 			}
 		case *s3.HeadObjectInput:
 			req, resp := svc.HeadObjectRequest(r)
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
-			numBytes = 0
 			if err == nil {
 				numBytes = *resp.ContentLength
 			}
@@ -394,12 +397,10 @@ func (params *Params) startClient(cfg *aws.Config) {
 			req, _ := svc.PutObjectTaggingRequest(r)
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
-			numBytes = 0
 		case *s3.GetObjectTaggingInput:
 			req, _ := svc.GetObjectTaggingRequest(r)
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
-			numBytes = 0
 		default:
 			panic("Developer error")
 		}
@@ -628,7 +629,7 @@ func (params Params) reportPrint(report map[string]interface{}) {
 
 // samples per operation
 func (params Params) spo(op string) uint {
-	if op == opWrite {
+	if op == opWrite || op == opPutObjTag {
 		return params.numSamples
 	}
 
