@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha512"
+	"hash"
 	"flag"
 	"fmt"
 	"io"
@@ -11,10 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"regexp"
-	"strconv"
 	mathrand "math/rand"
-	"encoding/json"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -22,20 +21,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-var (
-	gitHash   string
-	buildDate string
-)
-
-const (
-	opRead  = "Read"
-	opWrite = "Write"
-	opHeadObj = "HeadObj"
-	opGetObjTag = "GetObjTag"
-	opPutObjTag = "PutObjTag"
-)
-
 var bufferBytes []byte
+var data_hash_base32 string
+var data_hash [sha512.Size]byte
 
 // true if created
 // false if existed
@@ -57,35 +45,13 @@ func (params *Params) prepareBucket(cfg *aws.Config) bool {
 	return false
 }
 
-func parse_size(sz string) int64 {
-	sizes := map[string]int64 {
-		"b": 1,
-		"Kb": 1024,
-		"Mb": 1024 * 1024,
-		"Gb": 1024 * 1024 * 1024,
-	}
-	re := regexp.MustCompile(`^(\d+)([bKMG]{1,2})$`)
-	mm := re.FindStringSubmatch(sz)
-	if len(mm) != 3 {
-		fmt.Printf("Invalid objectSize value format\n")
-		os.Exit(1)
-	}
-	val, err := strconv.ParseInt(string(mm[1]), 10, 64)
-	mult, ex := sizes[string(mm[2])]
-	if !ex || err != nil {
-		fmt.Printf("Invalid objectSize value\n")
-		os.Exit(1)
-	}
-	return val * mult
-}
-
 func main() {
 	endpoint := flag.String("endpoint", "", "S3 endpoint(s) comma separated - http://IP:PORT,http://IP:PORT")
 	region := flag.String("region", "igneous-test", "AWS region to use, eg: us-west-1|us-east-1, etc")
 	accessKey := flag.String("accessKey", "", "the S3 access key")
 	accessSecret := flag.String("accessSecret", "", "the S3 access secret")
 	bucketName := flag.String("bucket", "bucketname", "the bucket for which to run the test")
-	objectNamePrefix := flag.String("objectNamePrefix", "loadgen_test_", "prefix of the object name that will be used")
+	objectNamePrefix := flag.String("objectNamePrefix", "loadgen_test", "prefix of the object name that will be used")
 	objectSize := flag.String("objectSize", "80Mb", "size of individual requests (must be smaller than main memory)")
 	numClients := flag.Int("numClients", 40, "number of concurrent clients")
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
@@ -103,6 +69,7 @@ func main() {
 	tagValPrefix := flag.String("tagValPrefix", "tag_val_", "prefix of the tag value that will be used")
 	version := flag.Bool("version", false, "print version info")
 	reportFormat := flag.String("reportFormat", "Version;Parameters;Parameters:numClients;Parameters:numSamples;Parameters:objectSize (MB);Parameters:sampleReads;Parameters:clientDelay;Parameters:readObj;Parameters:headObj;Parameters:putObjTag;Parameters:getObjTag;Tests:Operation;Tests:Total Requests Count;Tests:Errors Count;Tests:Total Throughput (MB/s);Tests:Duration Max;Tests:Duration Avg;Tests:Duration Min;Tests:Ttfb Max;Tests:Ttfb Avg;Tests:Ttfb Min;-Tests:Duration 25th-ile;-Tests:Duration 50th-ile;-Tests:Duration 75th-ile;-Tests:Ttfb 25th-ile;-Tests:Ttfb 50th-ile;-Tests:Ttfb 75th-ile;", "rearrange output fields")
+	validate := flag.Bool("validate", false, "validate stored data")
 
 	flag.Parse()
 
@@ -155,7 +122,7 @@ func main() {
 		tagNamePrefix:    *tagNamePrefix,
 		tagValPrefix:     *tagValPrefix,
 		reportFormat:     *reportFormat,
-
+		validate:         *validate,
 	}
 
 	// Generate the data from which we will do the writting
@@ -164,9 +131,10 @@ func main() {
 	bufferBytes = make([]byte, params.objectSize, params.objectSize)
 	_, err := rand.Read(bufferBytes)
 	if err != nil {
-		fmt.Printf("Could not allocate a buffer")
-		os.Exit(1)
+		panic("Could not allocate a buffer")
 	}
+	data_hash = sha512.Sum512(bufferBytes)
+	data_hash_base32 = to_b32(data_hash[:])
 	params.printf("Done (%s)\n", time.Since(timeGenData))
 
 	// Start the load clients and run a write test followed by a read test
@@ -200,6 +168,10 @@ func main() {
 	if params.readObj {
 		params.printf("Running %s test...\n", opRead)
 		testResults = append(testResults, params.Run(opRead))
+	}
+	if params.validate {
+		params.printf("Running %s test...\n", opValidate)
+		testResults = append(testResults, params.Run(opValidate))
 	}
 
 	// Do cleanup if required
@@ -295,23 +267,32 @@ func (params *Params) submitLoad(op string) {
 	bucket := aws.String(params.bucketName)
 	opSamples := params.spo(op)
 	for i := uint(0); i < opSamples; i++ {
-		key := aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i % params.numSamples))
+		key := aws.String(fmt.Sprintf("%s_%s_%d", params.objectNamePrefix, data_hash_base32, i % params.numSamples))
 		if op == opWrite {
-			params.requests <- &s3.PutObjectInput{
-				Bucket: bucket,
-				Key:    key,
-				Body:   bytes.NewReader(bufferBytes),
+			params.requests <- Req{
+				top: op,
+				req : &s3.PutObjectInput{
+					Bucket: bucket,
+					Key:    key,
+					Body:   bytes.NewReader(bufferBytes),
+				},
 			}
-		} else if op == opRead {
-			params.requests <- &s3.GetObjectInput{
-				Bucket: bucket,
-				Key:    key,
-			}
+		} else if op == opRead || op == opValidate {
+				params.requests <- Req{
+					top: op,
+					req: &s3.GetObjectInput{
+						Bucket: bucket,
+						Key:    key,
+					},
+				}
 		} else if op == opHeadObj {
-			params.requests <- &s3.HeadObjectInput{
-				Bucket: bucket,
-				Key:    key,
-			}
+				params.requests <- Req{
+					top: op,
+					req: &s3.HeadObjectInput{
+						Bucket: bucket,
+						Key:    key,
+					},
+				}
 		} else if op == opPutObjTag {
 			tagSet := make([]*s3.Tag, 0, params.numTags)
 			for iTag := uint(0); iTag < params.numTags; iTag++ {
@@ -322,15 +303,21 @@ func (params *Params) submitLoad(op string) {
 						Value: &tag_value,
 						})
 			}
-			params.requests <- &s3.PutObjectTaggingInput{
-				Bucket: bucket,
-				Key:    key,
-				Tagging: &s3.Tagging{ TagSet: tagSet, },
+			params.requests <- Req{
+				top: op,
+				req: &s3.PutObjectTaggingInput{
+					Bucket: bucket,
+					Key:    key,
+					Tagging: &s3.Tagging{ TagSet: tagSet, },
+				},
 			}
 		} else if op == opGetObjTag {
-			params.requests <- &s3.GetObjectTaggingInput{
-				Bucket: bucket,
-				Key:    key,
+			params.requests <- Req{
+				top: op,
+				req: &s3.GetObjectTaggingInput{
+					Bucket: bucket,
+					Key:    key,
+				},
 			}
 		} else {
 			panic("Developer error")
@@ -360,8 +347,10 @@ func (params *Params) startClient(cfg *aws.Config) {
 		var ttfb time.Duration
 		var err error
 		var numBytes int64 = 0
+		cur_op := request.top
+		var hasher hash.Hash = nil
 
-		switch r := request.(type) {
+		switch r := request.req.(type) {
 		case *s3.PutObjectInput:
 			req, _ := svc.PutObjectRequest(r)
 			// Disable payload checksum calculation (very expensive)
@@ -376,12 +365,24 @@ func (params *Params) startClient(cfg *aws.Config) {
 			err = req.Send()
 			ttfb = time.Since(putStartTime)
 			if err == nil {
-				numBytes, err = io.Copy(ioutil.Discard, resp.Body)
+				if cur_op == opRead {
+					numBytes, err = io.Copy(ioutil.Discard, resp.Body)
+				} else if cur_op == opValidate {
+					hasher = sha512.New()
+					numBytes, err = io.Copy(hasher, resp.Body)
+				}
 			}
 			if err != nil {
 				numBytes = 0
 			} else if numBytes != params.objectSize {
 				err = fmt.Errorf("expected object length %d, actual %d", params.objectSize, numBytes)
+			}
+			if cur_op == opValidate && err == nil {
+				cur_sum := hasher.Sum(nil)
+				if !bytes.Equal(cur_sum, data_hash[:]) {
+					cur_sum_enc := to_b32(cur_sum[:])
+					err = fmt.Errorf("Read data checksum %s is not eq to write data checksum %s", cur_sum_enc, data_hash_base32)
+				}
 			}
 		case *s3.HeadObjectInput:
 			req, resp := svc.HeadObjectRequest(r)
@@ -407,259 +408,4 @@ func (params *Params) startClient(cfg *aws.Config) {
 
 		params.responses <- Resp{err, time.Since(putStartTime), numBytes, ttfb}
 	}
-}
-
-// Specifies the parameters for a given test
-type Params struct {
-	requests         chan Req
-	responses        chan Resp
-	numSamples       uint
-	numClients       uint
-	objectSize       int64
-	objectNamePrefix string
-	bucketName       string
-	endpoints        []string
-	verbose          bool
-	headObj          bool
-	sampleReads      uint
-	clientDelay      int
-	jsonOutput       bool
-	deleteAtOnce     int
-	putObjTag        bool
-	getObjTag        bool
-	numTags          uint
-	readObj          bool
-	tagNamePrefix    string
-	tagValPrefix     string
-	reportFormat     string
-}
-
-func (params Params) printf(f string, args ...interface{}) {
-	if params.verbose {
-		fmt.Printf(f, args...)
-	}
-}
-
-// Contains the summary for a given test result
-type Result struct {
-	operation        string
-	bytesTransmitted int64
-	opDurations      []float64
-	totalDuration    time.Duration
-	opTtfb           []float64
-	opErrors         []string
-}
-
-func (r Result) report() map[string]interface{} {
-	ret := make(map[string]interface{})
-	ret["Operation"] = r.operation
-	ret["Total Requests Count"] = len(r.opDurations)
-	if r.operation == opWrite || r.operation == opRead {
-		ret["Total Transferred (MB)"] = float64(r.bytesTransmitted)/(1024*1024)
-		ret["Total Throughput (MB/s)"] = (float64(r.bytesTransmitted)/(1024*1024))/r.totalDuration.Seconds()
-	}
-	ret["Total Duration (s)"] = r.totalDuration.Seconds()
-
-	if len(r.opDurations) > 0 {
-		ret["Duration Max"] = percentile(r.opDurations, 100)
-		ret["Duration Avg"] = avg(r.opDurations)
-		ret["Duration Min"] = percentile(r.opDurations, 0)
-		ret["Duration 99th-ile"] = percentile(r.opDurations, 99)
-		ret["Duration 90th-ile"] = percentile(r.opDurations, 90)
-		ret["Duration 75th-ile"] = percentile(r.opDurations, 75)
-		ret["Duration 50th-ile"] = percentile(r.opDurations, 50)
-		ret["Duration 25th-ile"] = percentile(r.opDurations, 25)
-	}
-
-	if len(r.opTtfb) > 0 {
-		ret["Ttfb Max"] = percentile(r.opTtfb, 100)
-		ret["Ttfb Avg"] = avg(r.opTtfb)
-		ret["Ttfb Min"] = percentile(r.opTtfb, 0)
-		ret["Ttfb 99th-ile"] = percentile(r.opTtfb, 99)
-		ret["Ttfb 90th-ile"] = percentile(r.opTtfb, 90)
-		ret["Ttfb 75th-ile"] = percentile(r.opTtfb, 75)
-		ret["Ttfb 50th-ile"] = percentile(r.opTtfb, 50)
-		ret["Ttfb 25th-ile"] = percentile(r.opTtfb, 25)
-	}
-
-	ret["Errors Count"] = len(r.opErrors)
-	ret["Errors"] = r.opErrors
-	return ret
-}
-
-func (params Params) report() map[string]interface{} {
-	ret := make(map[string]interface{})
-	ret["endpoints"] =  params.endpoints
-	ret["bucket"] = params.bucketName
-	ret["objectNamePrefix"] = params.objectNamePrefix
-	ret["objectSize (MB)"] = float64(params.objectSize)/(1024*1024)
-	ret["numClients"] = params.numClients
-	ret["numSamples"] = params.numSamples
-	ret["sampleReads"] = params.sampleReads
-	ret["verbose"] = params.verbose
-	ret["headObj"] = params.headObj
-	ret["clientDelay"] = params.clientDelay
-	ret["jsonOutput"] = params.jsonOutput
-	ret["deleteAtOnce"] = params.deleteAtOnce
-	ret["numTags"] = params.numTags
-	ret["putObjTag"] = params.putObjTag
-	ret["getObjTag"] = params.getObjTag
-	ret["readObj"] = params.readObj
-	ret["tagNamePrefix"] = params.tagNamePrefix
-	ret["tagValPrefix"] = params.tagValPrefix
-	ret["reportFormat"] = params.reportFormat
-	return ret
-}
-
-func (params Params) reportPrepare(tests []Result) map[string]interface{} {
-	report := make(map[string]interface{})
-	report["Version"] = fmt.Sprintf("%s-%s", buildDate, gitHash)
-	report["Parameters"] = params.report()
-	testreps := make([]map[string]interface{}, 0, len(tests))
-	for _, r := range tests {
-		testreps = append(testreps, r.report())
-	}
-	report["Tests"] = testreps
-	return report
-}
-
-func indexOf(sls []string, s string) int {
-	ret := -1
-	for i, v := range sls {
-		if v == s {
-			ret = i
-			break
-		}
-	}
-	return ret
-}
-
-func keysSort(keys []string, format []string) []string {
-	sort.Strings(keys)
-	cur_formated := 0
-
-	for _, fv := range format {
-		fv = strings.TrimSpace(fv)
-		should_del := strings.HasPrefix(fv, "-")
-		if should_del {
-			fv = fv[1:]
-		}
-		ci := indexOf(keys, fv)
-		if ci < 0 {
-			continue
-		}
-		// delete old pos
-		keys = append(keys[:ci], keys[ci+1:]...)
-
-		if !should_del {
-			// insert new pos
-			keys = append(keys[:cur_formated], append([]string{fv}, keys[cur_formated:]...)...)
-			cur_formated++
-		}
-	}
-
-	return keys
-}
-
-func formatFilter(format []string, key string) []string {
-	ret := []string{}
-	for _, v := range format {
-		if strings.HasPrefix(v, key + ":") {
-			ret = append(ret, v[len(key + ":"):])
-		} else if strings.HasPrefix(v, "-" + key + ":") {
-			ret = append(ret, "-" + v[len("-" + key + ":"):])
-		}
-	}
-
-	return ret
-}
-
-func mapPrint(m map[string]interface{}, repFormat []string, prefix string) {
-	var mkeys []string
-	for k,_ := range m {
-		mkeys = append(mkeys, k)
-	}
-	mkeys = keysSort(mkeys, repFormat)
-	for _, k := range mkeys {
-		v := m[k]
-		fmt.Printf("%s %-27s", prefix, k+":")
-		switch val := v.(type) {
-		case []string:
-			if len(val) == 0 {
-				fmt.Printf(" []\n")
-			} else {
-				fmt.Println()
-				for _, s := range val {
-					fmt.Printf("%s%s %s\n", prefix, prefix, s)
-				}
-			}
-		case map[string]interface{}:
-			fmt.Println()
-			mapPrint(val, formatFilter(repFormat, k), prefix + "   ")
-		case []map[string]interface{}:
-			if len(val) == 0 {
-				fmt.Printf(" []\n")
-			} else {
-				val_format := formatFilter(repFormat, k)
-				for _, m := range val {
-					fmt.Println()
-					mapPrint(m, val_format, prefix + "   ")
-				}
-			}
-		case float64:
-			fmt.Printf(" %.3f\n", val)
-		default:
-			fmt.Printf(" %v\n", val)
-		}
-	}
-}
-
-func (params Params) reportPrint(report map[string]interface{}) {
-	if params.jsonOutput {
-		b, err := json.Marshal(report)
-		if err != nil {
-			fmt.Println("Cannot generate JSON report %v", err)
-		}
-		fmt.Println(string(b))
-		return
-	}
-
-	mapPrint(report, strings.Split(params.reportFormat, ";"), "")
-}
-
-// samples per operation
-func (params Params) spo(op string) uint {
-	if op == opWrite || op == opPutObjTag {
-		return params.numSamples
-	}
-
-	return params.numSamples * params.sampleReads
-}
-
-func percentile(dt []float64, i int) float64 {
-	ln := len(dt)
-	if i >= 100 {
-		i = ln - 1
-	} else if i > 0 && i < 100 {
-		i = int(float64(i) / 100 * float64(ln))
-	}
-	return dt[i]
-}
-
-func avg(dt []float64) float64 {
-	ln := float64(len(dt))
-	sm := float64(0)
-	for _, el := range dt {
-		sm += el
-	}
-	return sm / ln
-}
-
-type Req interface{}
-
-type Resp struct {
-	err      error
-	duration time.Duration
-	numBytes int64
-	ttfb     time.Duration
 }
