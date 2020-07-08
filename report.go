@@ -171,5 +171,7 @@ func (params Params) report() map[string]interface{} {
 	ret["tagValPrefix"] = params.tagValPrefix
 	ret["reportFormat"] = params.reportFormat
 	ret["validate"] = params.validate
+	ret["skipWrite"] = params.skipWrite
+	ret["skipRead"] = params.skipRead
 	return ret
 }

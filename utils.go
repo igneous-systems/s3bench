@@ -5,6 +5,11 @@ import (
 	"strconv"
 	"regexp"
 	"encoding/base32"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+
 )
 
 func to_b32(dt []byte) string {
@@ -78,4 +83,34 @@ func indexOf(sls []string, s string) int {
 		}
 	}
 	return ret
+}
+
+func genObjName(pref string, hsh string, idx uint) *string {
+	return aws.String(fmt.Sprintf("%s_%s_%d", pref, hsh, idx))
+}
+
+func (params *Params) getObjectHash(cfg *aws.Config) (string, error){
+	cfg.Endpoint = aws.String(params.endpoints[0])
+	svc := s3.New(session.New(), cfg)
+
+	result, err := svc.ListObjectsV2(&s3.ListObjectsV2Input{
+		Bucket: aws.String(params.bucketName),
+		MaxKeys: aws.Int64(1),
+		Prefix: aws.String(params.objectNamePrefix),
+	})
+
+	if err != nil {
+		return "", err
+	}
+	if len(result.Contents) == 0 {
+		return "", fmt.Errorf("Empty bucket")
+	}
+
+	re := regexp.MustCompile(`^.*_([A-Z2-7]+)_[0-9]+$`)
+	mm := re.FindStringSubmatch(*result.Contents[0].Key)
+	if len(mm) != 2 {
+		return "", fmt.Errorf("Invalid object name format")
+	}
+
+	return mm[1], nil
 }

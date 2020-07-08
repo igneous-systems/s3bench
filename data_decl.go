@@ -52,6 +52,8 @@ type Params struct {
 	tagValPrefix     string
 	reportFormat     string
 	validate         bool
+	skipWrite        bool
+	skipRead         bool
 }
 
 // Contains the summary for a given test result
