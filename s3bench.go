@@ -70,6 +70,8 @@ func main() {
 	version := flag.Bool("version", false, "print version info")
 	reportFormat := flag.String("reportFormat", "Version;Parameters;Parameters:numClients;Parameters:numSamples;Parameters:objectSize (MB);Parameters:sampleReads;Parameters:clientDelay;Parameters:readObj;Parameters:headObj;Parameters:putObjTag;Parameters:getObjTag;Tests:Operation;Tests:Total Requests Count;Tests:Errors Count;Tests:Total Throughput (MB/s);Tests:Duration Max;Tests:Duration Avg;Tests:Duration Min;Tests:Ttfb Max;Tests:Ttfb Avg;Tests:Ttfb Min;-Tests:Duration 25th-ile;-Tests:Duration 50th-ile;-Tests:Duration 75th-ile;-Tests:Ttfb 25th-ile;-Tests:Ttfb 50th-ile;-Tests:Ttfb 75th-ile;", "rearrange output fields")
 	validate := flag.Bool("validate", false, "validate stored data")
+	skipWrite := flag.Bool("skipWrite", false, "do not run Write test")
+	skipRead := flag.Bool("skipRead", false, "do not run Read test")
 
 	flag.Parse()
 
@@ -118,30 +120,47 @@ func main() {
 		putObjTag:        *putObjTag || *getObjTag,
 		getObjTag:        *getObjTag,
 		numTags:          uint(*numTags),
-		readObj:          !(*putObjTag || *getObjTag || *headObj),
+		readObj:          !(*putObjTag || *getObjTag || *headObj) && !*skipRead,
 		tagNamePrefix:    *tagNamePrefix,
 		tagValPrefix:     *tagValPrefix,
 		reportFormat:     *reportFormat,
 		validate:         *validate,
+		skipWrite:        *skipWrite,
+		skipRead:         *skipRead,
 	}
 
-	// Generate the data from which we will do the writting
-	params.printf("Generating in-memory sample data...\n")
-	timeGenData := time.Now()
-	bufferBytes = make([]byte, params.objectSize, params.objectSize)
-	_, err := rand.Read(bufferBytes)
-	if err != nil {
-		panic("Could not allocate a buffer")
+	if !params.skipWrite {
+		// Generate the data from which we will do the writting
+		params.printf("Generating in-memory sample data...\n")
+		timeGenData := time.Now()
+		bufferBytes = make([]byte, params.objectSize, params.objectSize)
+		_, err := rand.Read(bufferBytes)
+		if err != nil {
+			panic("Could not allocate a buffer")
+		}
+		data_hash = sha512.Sum512(bufferBytes)
+		data_hash_base32 = to_b32(data_hash[:])
+		params.printf("Done (%s)\n", time.Since(timeGenData))
 	}
-	data_hash = sha512.Sum512(bufferBytes)
-	data_hash_base32 = to_b32(data_hash[:])
-	params.printf("Done (%s)\n", time.Since(timeGenData))
 
-	// Start the load clients and run a write test followed by a read test
 	cfg := &aws.Config{
 		Credentials:      credentials.NewStaticCredentials(*accessKey, *accessSecret, ""),
 		Region:           aws.String(*region),
 		S3ForcePathStyle: aws.Bool(true),
+	}
+
+	if data_hash_base32 == "" {
+		var err error
+		data_hash_base32, err = params.getObjectHash(cfg)
+		if err != nil {
+			panic(fmt.Sprintf("Cannot read object hash:> %v", err))
+		}
+		var hash_from_b32 []byte
+		hash_from_b32, err = from_b32(data_hash_base32)
+		if err != nil {
+			panic(fmt.Sprintf("Cannot convert object hash:> %v", err))
+		}
+		copy(data_hash[:], hash_from_b32)
 	}
 
 	bucket_created := params.prepareBucket(cfg)
@@ -150,9 +169,10 @@ func main() {
 
 	testResults := []Result{}
 
-	params.printf("Running %s test...\n", opWrite)
-	testResults = append(testResults, params.Run(opWrite))
-
+	if !params.skipWrite {
+		params.printf("Running %s test...\n", opWrite)
+		testResults = append(testResults, params.Run(opWrite))
+	}
 	if params.putObjTag {
 		params.printf("Running %s test...\n", opPutObjTag)
 		testResults = append(testResults, params.Run(opPutObjTag))
@@ -184,8 +204,7 @@ func main() {
 
 		keyList := make([]*s3.ObjectIdentifier, 0, params.deleteAtOnce)
 		for i := 0; i < *numSamples; i++ {
-			objName := fmt.Sprintf("%s%d", *objectNamePrefix, i)
-			key := aws.String(objName)
+			key := genObjName(params.objectNamePrefix, data_hash_base32, uint(i))
 
 			if params.putObjTag {
 				deleteObjectTaggingInput := &s3.DeleteObjectTaggingInput{
@@ -193,7 +212,7 @@ func main() {
 						Key:    key,
 				}
 				_, err := svc.DeleteObjectTagging(deleteObjectTaggingInput)
-				params.printf("Delete tags %s |err %v\n", objName, err)
+				params.printf("Delete tags %s |err %v\n", *key, err)
 			}
 			bar := s3.ObjectIdentifier{ Key: key, }
 			keyList = append(keyList, &bar)
@@ -267,7 +286,7 @@ func (params *Params) submitLoad(op string) {
 	bucket := aws.String(params.bucketName)
 	opSamples := params.spo(op)
 	for i := uint(0); i < opSamples; i++ {
-		key := aws.String(fmt.Sprintf("%s_%s_%d", params.objectNamePrefix, data_hash_base32, i % params.numSamples))
+		key := genObjName(params.objectNamePrefix, data_hash_base32, i % params.numSamples)
 		if op == opWrite {
 			params.requests <- Req{
 				top: op,
