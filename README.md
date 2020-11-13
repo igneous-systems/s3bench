@@ -1,3 +1,11 @@
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/412fa22ba5f8452794584ed9819f149b)](https://www.codacy.com?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=Seagate/s3bench&amp;utm_campaign=Badge_Grade)
+
+# Initial
+Cloned from
+```
+https://github.com/igneous-systems/s3bench.git
+```
+
 # S3 Bench
 This tool offers the ability to run very basic throughput benchmarking against
 an S3-compatible endpoint. It does a series of put operations followed by a
@@ -124,4 +132,11 @@ Put times 75th %ile: 0.002 s
 Put times 50th %ile: 0.001 s
 Put times 25th %ile: 0.001 s
 Put times Min:       0.001 s
+```
+
+##### Head-object
+It is possible to send head-object requests instead of get-object.
+For this purpose one sould use *-metaData* flag
+```
+./s3bench -accessKey=KEY -accessSecret=SECRET -bucket=loadgen -endpoint=http://endpoint1:80 -numClients=2 -numSamples=10 -objectNamePrefix=loadgen -objectSize=1024 -metaData
 ```
