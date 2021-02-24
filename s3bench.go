@@ -38,6 +38,7 @@ func main() {
 	numClients := flag.Int("numClients", 40, "number of concurrent clients")
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
 	skipCleanup := flag.Bool("skipCleanup", false, "skip deleting objects created by this tool at the end of the run")
+	pause := flag.Bool("pause", false, "pause before starting read stage")
 	verbose := flag.Bool("verbose", false, "print verbose per thread status")
 
 	flag.Parse()
@@ -91,6 +92,13 @@ func main() {
 	fmt.Printf("Running %s test...\n", opWrite)
 	writeResult := params.Run(opWrite)
 	fmt.Println()
+
+	// Pause after write test and before read test
+	if *pause {
+		fmt.Printf("Press enter to start read test...\n")
+		fmt.Scanln()
+		fmt.Println()
+	}
 
 	fmt.Printf("Running %s test...\n", opRead)
 	readResult := params.Run(opRead)
@@ -255,7 +263,7 @@ func (params Params) String() string {
 	output += fmt.Sprintf("objectSize:       %0.4f MB\n", float64(params.objectSize)/(1024*1024))
 	output += fmt.Sprintf("numClients:       %d\n", params.numClients)
 	output += fmt.Sprintf("numSamples:       %d\n", params.numSamples)
-	output += fmt.Sprintf("verbose:       %d\n", params.verbose)
+	output += fmt.Sprintf("verbose:       %t\n", params.verbose)
 	return output
 }
 
