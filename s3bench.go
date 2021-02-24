@@ -263,7 +263,7 @@ func (params Params) String() string {
 	output += fmt.Sprintf("objectSize:       %0.4f MB\n", float64(params.objectSize)/(1024*1024))
 	output += fmt.Sprintf("numClients:       %d\n", params.numClients)
 	output += fmt.Sprintf("numSamples:       %d\n", params.numSamples)
-	output += fmt.Sprintf("verbose:       %d\n", params.verbose)
+	output += fmt.Sprintf("verbose:       %t\n", params.verbose)
 	return output
 }
 
