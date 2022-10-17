@@ -37,6 +37,7 @@ func main() {
 	objectSize := flag.Int64("objectSize", 80*1024*1024, "size of individual requests in bytes (must be smaller than main memory)")
 	numClients := flag.Int("numClients", 40, "number of concurrent clients")
 	numSamples := flag.Int("numSamples", 200, "total number of requests to send")
+	readNums := flag.Int("readNums", 10, "total number of requests  read")
 	skipCleanup := flag.Bool("skipCleanup", false, "skip deleting objects created by this tool at the end of the run")
 	verbose := flag.Bool("verbose", false, "print verbose per thread status")
 
@@ -92,16 +93,20 @@ func main() {
 	writeResult := params.Run(opWrite)
 	fmt.Println()
 
-	fmt.Printf("Running %s test...\n", opRead)
-	readResult := params.Run(opRead)
-	fmt.Println()
+        fmt.Printf("Running %s test...\n", opRead)
 
+	fmt.Println()
 	// Repeating the parameters of the test followed by the results
 	fmt.Println(params)
 	fmt.Println()
 	fmt.Println(writeResult)
 	fmt.Println()
-	fmt.Println(readResult)
+
+	for  i := 1; i <= *readNums; i++ {
+	  fmt.Printf("Read %d Round...\n", i)
+	  readResult := params.Run(opRead)
+	  fmt.Println(readResult)
+	}
 
 	// Do cleanup if required
 	if !*skipCleanup {
