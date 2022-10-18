@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"encoding/hex"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -26,8 +27,19 @@ const (
 )
 
 var bufferBytes []byte
+var l []string
+
+// randToken generates a random hex value.
+func randToken(n int) (string, error) {
+	bytes := make([]byte, n)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
 
 func main() {
+	startTime := time.Now()
 	endpoint := flag.String("endpoint", "", "S3 endpoint(s) comma separated - http://IP:PORT,http://IP:PORT")
 	region := flag.String("region", "igneous-test", "AWS region to use, eg: us-west-1|us-east-1, etc")
 	accessKey := flag.String("accessKey", "", "the S3 access key")
@@ -54,6 +66,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Generate the suffix
+
+
+	for i :=0; i<=*numSamples; i++ {
+		token, _ := randToken(16)
+		l = append(l, token)
+	}
+
 	// Setup and print summary of the accepted parameters
 	params := Params{
 		requests:         make(chan Req),
@@ -68,6 +88,7 @@ func main() {
 	}
 	fmt.Println(params)
 	fmt.Println()
+
 
 	// Generate the data from which we will do the writting
 	fmt.Printf("Generating in-memory sample data... ")
@@ -120,7 +141,7 @@ func main() {
 		keyList := make([]*s3.ObjectIdentifier, 0, commitSize)
 		for i := 0; i < *numSamples; i++ {
 			bar := s3.ObjectIdentifier{
-				Key: aws.String(fmt.Sprintf("%s%d", *objectNamePrefix, i)),
+				Key: aws.String(fmt.Sprintf("%s%s", *objectNamePrefix, l[i])),
 			}
 			keyList = append(keyList, &bar)
 			if len(keyList) == commitSize || i == *numSamples-1 {
@@ -143,6 +164,7 @@ func main() {
 		}
 		fmt.Printf("Successfully deleted %d/%d objects in %s\n", numSuccessfullyDeleted, *numSamples, time.Since(delStartTime))
 	}
+	fmt.Printf("Total running time %s\n",  time.Since(startTime))
 }
 
 func (params *Params) Run(op string) Result {
@@ -180,7 +202,7 @@ func (params *Params) Run(op string) Result {
 func (params *Params) submitLoad(op string) {
 	bucket := aws.String(params.bucketName)
 	for i := 0; i < params.numSamples; i++ {
-		key := aws.String(fmt.Sprintf("%s%d", params.objectNamePrefix, i))
+		key := aws.String(fmt.Sprintf("%s%s", params.objectNamePrefix, l[i]))
 		if op == opWrite {
 			params.requests <- &s3.PutObjectInput{
 				Bucket: bucket,
