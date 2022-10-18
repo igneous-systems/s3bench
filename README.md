@@ -12,6 +12,8 @@ Run the following command to build the binary.
 
 ```
 go get github.com/igneous-systems/s3bench
+or 
+go build s3bench.go
 ```
 The binary will be placed under $GOPATH/bin/s3bench.
 
